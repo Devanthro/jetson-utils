@@ -202,14 +202,36 @@ bool gstCamera::buildLaunchStr()
 		else if( mOptions.flipMethod == videoOptions::FLIP_ROTATE_180 )
 			mOptions.flipMethod = videoOptions::FLIP_NONE;
 	
-		ss << "nvarguscamerasrc sensor-mode=1 aelock=true awblock=true sensor-id=" << mOptions.resource.port << " ! video/x-raw(memory:NVMM), width=(int)" << GetWidth() << ", height=(int)" << GetHeight() << ", framerate=" << (int)mOptions.frameRate << "/1, format=(string)NV12 ! nvvidconv flip-method=" << mOptions.flipMethod << " ! ";
-		// ss << "nvarguscamerasrc sensor-mode=1 sensor-id=" << mOptions.resource.port << " ! video/x-raw(memory:NVMM), width=(int)" << GetWidth() << ", height=(int)" << GetHeight() << ", framerate=" << (int)mOptions.frameRate << "/1, format=(string)NV12 ! nvvidconv flip-method=" << mOptions.flipMethod << " ! ";
+
+		int width = GetWidth();
+		int height = GetHeight();
+		int left=0; int right=0; int top=0; int bottom=0; int size=0;
+		if (width > height) {
+			left = (width-height)/2 - int(0.05*height); // shifting 5% as the center of the camera is not in the center of the image
+			right = (width+height)/2 - int(0.05*height);
+			bottom = height;
+			size = height;
+		}
+		else if (height > width) {
+			top = (height-width)/2;
+			bottom = (height+width)/2;
+			right = width;
+			size=width;
+		}
+
+		ss << "nvarguscamerasrc sensor-mode=1 aelock=true awblock=true sensor-id=" << mOptions.resource.port << " ! video/x-raw(memory:NVMM), width=(int)" << GetWidth() << ", height=(int)" << GetHeight() << ", framerate=" << (int)mOptions.frameRate << "/1, format=(string)NV12 ! nvvidconv flip-method=" << mOptions.flipMethod << " left=" << left <<  " right=" << right << " top=" << top << " bottom=" << bottom << " ! ";
+
 	#else
 		// older JetPack versions use nvcamerasrc element instead of nvarguscamerasrc
 		ss << "nvcamerasrc fpsRange=\"" << (int)mOptions.frameRate << " " << (int)mOptions.frameRate << "\" ! video/x-raw(memory:NVMM), width=(int)" << GetWidth() << ", height=(int)" << GetHeight() << ", format=(string)NV12 ! nvvidconv flip-method=" << mOptions.flipMethod << " ! "; //'video/x-raw(memory:NVMM), width=(int)1920, height=(int)1080, format=(string)I420, framerate=(fraction)30/1' ! ";
 	#endif
-	
-		ss << (enable_nvmm ? "video/x-raw(memory:NVMM) ! " : "video/x-raw, alignment=7 ! "); 
+		
+		if (enable_nvmm) {
+			ss << "video/x-raw(memory:NVMM) ! ";
+		} else {
+				ss << "video/x-raw, width=(int)" << std::to_string(size) << ", height=(int)" << std::to_string(size) << ", alignment=7 ! ";
+		}
+		// ss << (enable_nvmm ? "video/x-raw(memory:NVMM) ! " : "video/x-raw, width=(int)" << std::to_string(size) << ", height=(int)" << std::to_string(size) << ", alignment=7 ! "); 
 		ss << "queue ! appsink name=mysink";
 	}
 	else
