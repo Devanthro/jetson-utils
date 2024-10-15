@@ -28,7 +28,6 @@
 
 #include <signal.h>
 
-
 bool signal_recieved = false;
 
 void sig_handler(int signo)
@@ -66,13 +65,11 @@ int main( int argc, char** argv )
 	if( cmdLine.GetFlag("help") )
 		return usage();
 
-
 	/*
 	 * attach signal handler
 	 */	
 	if( signal(SIGINT, sig_handler) == SIG_ERR )
 		LogError("can't catch SIGINT\n");
-
 
 	/*
 	 * create input video stream
@@ -85,7 +82,6 @@ int main( int argc, char** argv )
 		return 0;
 	}
 
-
 	/*
 	 * create output video stream
 	 */
@@ -94,9 +90,16 @@ int main( int argc, char** argv )
 	if( !output )
 	{
 		LogError("video-viewer:  failed to create output stream\n");
+		SAFE_DELETE(input);
 		return 0;
 	}
-	
+
+	/*
+	 * Set CUDA device (assuming a single GPU system for simplicity)
+	 * If running on multiple GPUs, consider setting the appropriate device for each instance.
+	 */
+	cudaSetDevice(cmdLine.GetInt("device", 0));
+	cudaDeviceSynchronize();
 
 	/*
 	 * capture/display loop
@@ -136,7 +139,6 @@ int main( int argc, char** argv )
 		}
 	}
 
-
 	/*
 	 * destroy resources
 	 */
@@ -145,6 +147,8 @@ int main( int argc, char** argv )
 	SAFE_DELETE(input);
 	SAFE_DELETE(output);
 
+	// Reset CUDA device to ensure a clean state for other instances
+	cudaDeviceReset();
+
 	printf("video-viewer:  shutdown complete\n");
 }
-

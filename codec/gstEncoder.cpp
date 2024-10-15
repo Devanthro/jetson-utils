@@ -308,7 +308,7 @@ bool gstEncoder::buildCapsStr()
 bool gstEncoder::buildLaunchStr()
 {
 	std::ostringstream ss;
-	ss << "appsrc name=mysource is-live=true do-timestamp=true format=3 ! ";  // setup appsrc input element
+	ss << "appsrc name=mysource is-live=true do-timestamp=true format=3 ! queue !";  // setup appsrc input element
 	
 	const URI& uri = GetResource();
 	std::string encoderOptions = "";
@@ -331,7 +331,7 @@ bool gstEncoder::buildLaunchStr()
 	
 	// the V4L2 encoders expect NVMM memory, so use nvvidconv to convert it
 	if( mOptions.codecType == videoOptions::CODEC_V4L2 && mOptions.codec != videoOptions::CODEC_MJPEG )
-		ss << "nvvidconv name=vidconv ! video/x-raw(memory:NVMM) ! ";
+		ss << "nvvidconv name=vidconv ! video/x-raw(memory:NVMM), alignment=7 ! ";
 	
 	// setup the encoder and options
 	ss << encoder << " name=encoder ";
@@ -371,7 +371,7 @@ bool gstEncoder::buildLaunchStr()
 	}
 
 	if( mOptions.codec == videoOptions::CODEC_H264 )
-		ss << "! video/x-h264 ! ";
+		ss << "! video/x-h264 ! queue !";
 	else if( mOptions.codec == videoOptions::CODEC_H265 )
 		ss << "! video/x-h265 ! ";
 	else if( mOptions.codec == videoOptions::CODEC_VP8 )

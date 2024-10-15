@@ -125,6 +125,50 @@ gstCamera* gstCamera::Create( const char* camera )
 	return Create( DefaultWidth, DefaultHeight, camera );
 }
 
+// bool gstCamera::buildLaunchStr()
+// {
+//     std::ostringstream ss;
+
+//     #if defined(ENABLE_NVMM)
+//         const bool enable_nvmm = true;
+//     #else
+//         const bool enable_nvmm = false;
+//     #endif
+
+//     if (mOptions.resource.protocol == "csi")
+//     {
+//         #if defined(__x86_64__) || defined(__amd64__)
+//             LogError(LOG_GSTREAMER "MIPI CSI camera isn't available on x86 - please use /dev/video (V4L2) instead");
+//             return false;
+//         #endif
+
+//         // Create GStreamer pipeline string for two CSI cameras
+//         ss << "nvarguscamerasrc sensor-id=0 ! video/x-raw(memory:NVMM), width=(int)" << GetWidth() << ", height=(int)" << GetHeight() << ", framerate=(int)" << mOptions.frameRate << "/1, format=(string)NV12 ! nvvidconv flip-method=" << mOptions.flipMethod << " ! queue ! videomixer name=mix sink_0::xpos=0 sink_0::ypos=0 ! nveglglessink sync=false "
+//            << "nvarguscamerasrc sensor-id=1 ! video/x-raw(memory:NVMM), width=(int)" << GetWidth() << ", height=(int)" << GetHeight() << ", framerate=(int)" << mOptions.frameRate << "/1, format=(string)NV12 ! nvvidconv flip-method=" << mOptions.flipMethod << " ! queue ! mix.sink_1::xpos=" << GetWidth() << " sink_1::ypos=0";
+
+//         if (enable_nvmm)
+//             ss << " video/x-raw(memory:NVMM) ! ";
+//         else
+//             ss << " video/x-raw, alignment=7 ! ";
+
+//         ss << "appsink name=mysink";
+//     }
+//     else
+//     {
+//         // Handle other protocols like v4l2 (not shown here, similar approach applies)
+//         ss << "v4l2src device=" << mOptions.resource.location << " do-timestamp=true ! ";
+
+//         // Add pipeline elements as needed...
+//         ss << "appsink name=mysink sync=false";
+//     }
+
+//     mLaunchStr = ss.str();
+
+//     LogInfo(LOG_GSTREAMER "gstCamera pipeline string:\n");
+//     LogInfo(LOG_GSTREAMER "%s\n", mLaunchStr.c_str());
+
+//     return true;
+// }
 
 // buildLaunchStr
 bool gstCamera::buildLaunchStr()
@@ -158,14 +202,15 @@ bool gstCamera::buildLaunchStr()
 		else if( mOptions.flipMethod == videoOptions::FLIP_ROTATE_180 )
 			mOptions.flipMethod = videoOptions::FLIP_NONE;
 	
-		ss << "nvarguscamerasrc sensor-id=" << mOptions.resource.port << " ! video/x-raw(memory:NVMM), width=(int)" << GetWidth() << ", height=(int)" << GetHeight() << ", framerate=" << (int)mOptions.frameRate << "/1, format=(string)NV12 ! nvvidconv flip-method=" << mOptions.flipMethod << " ! ";
+		ss << "nvarguscamerasrc sensor-mode=1 aelock=true awblock=true sensor-id=" << mOptions.resource.port << " ! video/x-raw(memory:NVMM), width=(int)" << GetWidth() << ", height=(int)" << GetHeight() << ", framerate=" << (int)mOptions.frameRate << "/1, format=(string)NV12 ! nvvidconv flip-method=" << mOptions.flipMethod << " ! ";
+		// ss << "nvarguscamerasrc sensor-mode=1 sensor-id=" << mOptions.resource.port << " ! video/x-raw(memory:NVMM), width=(int)" << GetWidth() << ", height=(int)" << GetHeight() << ", framerate=" << (int)mOptions.frameRate << "/1, format=(string)NV12 ! nvvidconv flip-method=" << mOptions.flipMethod << " ! ";
 	#else
 		// older JetPack versions use nvcamerasrc element instead of nvarguscamerasrc
 		ss << "nvcamerasrc fpsRange=\"" << (int)mOptions.frameRate << " " << (int)mOptions.frameRate << "\" ! video/x-raw(memory:NVMM), width=(int)" << GetWidth() << ", height=(int)" << GetHeight() << ", format=(string)NV12 ! nvvidconv flip-method=" << mOptions.flipMethod << " ! "; //'video/x-raw(memory:NVMM), width=(int)1920, height=(int)1080, format=(string)I420, framerate=(fraction)30/1' ! ";
 	#endif
 	
-		ss << (enable_nvmm ? "video/x-raw(memory:NVMM) ! " : "video/x-raw ! "); 
-		ss << "appsink name=mysink";
+		ss << (enable_nvmm ? "video/x-raw(memory:NVMM) ! " : "video/x-raw, alignment=7 ! "); 
+		ss << "queue ! appsink name=mysink";
 	}
 	else
 	{
@@ -254,6 +299,9 @@ bool gstCamera::buildLaunchStr()
 	#endif
 		ss << "appsink name=mysink sync=false";
 	}
+
+	// std::ostringstream ss1;
+	// ss1 << "nvarguscamerasrc sensor-mode=1 sensor-id=0 ! video/x-raw(memory:NVMM), width=1280, height=720, framerate=30/1, format=NV12 ! nvvidconv flip-method=2 ! video/x-raw, width=1280, height=720 ! queue ! nvcompositor name=compositor sink_0::xpos=0 sink_0::ypos=0 sink_1::xpos=1280 sink_1::ypos=0 ! nvvidconv ! video/x-raw ! appsink name=mysink nvarguscamerasrc sensor-mode=1 sensor-id=1 ! video/x-raw(memory:NVMM), width=1280, height=720, framerate=30/1, format=NV12 ! nvvidconv flip-method=2 ! video/x-raw, width=1280, height=720 ! queue ! compositor.sink_1";
 	
 	mLaunchStr = ss.str();
 
