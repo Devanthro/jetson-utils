@@ -207,8 +207,8 @@ bool gstCamera::buildLaunchStr()
 		int height = GetHeight();
 		int left=0; int right=0; int top=0; int bottom=0; int size=0;
 		if (width > height) {
-			left = (width-height)/2 - int(0.05*height); // shifting 5% as the center of the camera is not in the center of the image
-			right = (width+height)/2 - int(0.05*height);
+			left = (width-height)/2; //  - int(0.05*height); // shifting 5% as the center of the camera is not in the center of the image
+			right = (width+height)/2; // - int(0.05*height);
 			bottom = height;
 			size = height;
 		}
