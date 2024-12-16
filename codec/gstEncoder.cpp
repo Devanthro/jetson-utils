@@ -303,173 +303,396 @@ bool gstEncoder::buildCapsStr()
 }
 	
 	
-
-// buildLaunchStr
 bool gstEncoder::buildLaunchStr()
 {
-	std::ostringstream ss;
-	ss << "appsrc name=mysource is-live=true do-timestamp=true format=3 ! queue !";  // setup appsrc input element
-	
-	const URI& uri = GetResource();
-	std::string encoderOptions = "";
+    std::ostringstream ss;
+    const URI& uri = GetResource();
 
-	// select the encoder
-	const char* encoder = gst_select_encoder(mOptions.codec, mOptions.codecType);
-	
-	if( !encoder )
-	{
-		LogError(LOG_GSTREAMER "gstEncoder -- unsupported codec requested (%s)\n", videoOptions::CodecToStr(mOptions.codec));
-		LogError(LOG_GSTREAMER "              supported encoder codecs are:\n");
-		LogError(LOG_GSTREAMER "                 * h264\n");
-		LogError(LOG_GSTREAMER "                 * h265\n");
-		LogError(LOG_GSTREAMER "                 * vp8\n");
-		LogError(LOG_GSTREAMER "                 * vp9\n");
-		LogError(LOG_GSTREAMER "                 * mjpeg\n");
-		
-		return false;
-	}
-	
-	// the V4L2 encoders expect NVMM memory, so use nvvidconv to convert it
-	if( mOptions.codecType == videoOptions::CODEC_V4L2 && mOptions.codec != videoOptions::CODEC_MJPEG )
-		ss << "nvvidconv name=vidconv ! video/x-raw(memory:NVMM), alignment=7 ! ";
-	
-	// setup the encoder and options
-	ss << encoder << " name=encoder ";
-	
-	if( mOptions.codecType == videoOptions::CODEC_CPU )
-	{
-		if( mOptions.codec == videoOptions::CODEC_H264 || mOptions.codec == videoOptions::CODEC_H265 )
-		{
-			ss << "bitrate=" << mOptions.bitRate / 1000 << " ";	// x264enc/x265enc bitrates are in kbits
-			ss << "speed-preset=ultrafast tune=zerolatency ";
-			
-			if( mOptions.deviceType == videoOptions::DEVICE_IP )
-				ss << "key-int-max=30 insert-vui=1 ";			// send keyframes/I-frames more frequently for network streams
-		}
-		else if( mOptions.codec == videoOptions::CODEC_VP8 || mOptions.codec == videoOptions::CODEC_VP9 )
-		{
-			ss << "target-bitrate=" << mOptions.bitRate << " ";
-			
-			if( mOptions.deviceType == videoOptions::DEVICE_IP )
-				ss << "keyframe-max-dist=30 ";
-		}
-	}
-	else if( mOptions.codec != videoOptions::CODEC_MJPEG )
-	{
-		ss << "bitrate=" << mOptions.bitRate << " ";
-		
-		if( mOptions.deviceType == videoOptions::DEVICE_IP )
-		{
-			if( mOptions.codecType == videoOptions::CODEC_V4L2 )
-				ss << "insert-sps-pps=1 insert-vui=1 idrinterval=30 ";
-			else if( mOptions.codecType == videoOptions::CODEC_OMX )
-				ss << "insert-sps-pps=1 insert-vui=1 ";
-		}
-		
-		if( mOptions.codecType == videoOptions::CODEC_V4L2 )
-			ss << "maxperf-enable=1 ";
-	}
+    // We assume that appsrc will provide raw frames (I420 format).
+    // If needed, ensure that appsrc is setup to provide raw video that videorate can handle.
+    // Insert a tee (rawtee) right after appsrc to create two branches:
+    //    1) Full FPS branch -> Encode -> Save file
+    //    2) Reduced FPS branch -> videorate -> 15 FPS -> Encode -> webrtc/rtp/etc.
 
-	if( mOptions.codec == videoOptions::CODEC_H264 )
-		ss << "! video/x-h264 ! queue !";
-	else if( mOptions.codec == videoOptions::CODEC_H265 )
-		ss << "! video/x-h265 ! ";
-	else if( mOptions.codec == videoOptions::CODEC_VP8 )
-		ss << "! video/x-vp8 ! ";
-	else if( mOptions.codec == videoOptions::CODEC_VP9 )
-		ss << "! video/x-vp9 ! ";
-	else if( mOptions.codec == videoOptions::CODEC_MJPEG )
-		ss << "! image/jpeg ! ";
-	
-	if( mOptions.save.path.length() > 0 )
-	{
-		ss << "tee name=savetee savetee. ! queue ! ";
-		
-		if( !gst_build_filesink(mOptions.save, mOptions.codec, ss) )
-			return false;
+    ss << "appsrc name=mysource is-live=true do-timestamp=true format=3 ! queue ! tee name=rawtee ";
 
-		ss << "savetee. ! queue ! ";
-	}
-	
-	if( uri.protocol == "file" )
-	{
-		if( !gst_build_filesink(uri, mOptions.codec, ss) )
-			return false;
-	}
-	else if( uri.protocol == "rtp" || uri.protocol == "rtsp" || uri.protocol == "webrtc" )
-	{
-		if( mOptions.codec == videoOptions::CODEC_H264 )
-			ss << "rtph264pay";
-		else if( mOptions.codec == videoOptions::CODEC_H265 )
-			ss << "rtph265pay";
-		else if( mOptions.codec == videoOptions::CODEC_VP8 )
-			ss << "rtpvp8pay";
-		else if( mOptions.codec == videoOptions::CODEC_VP9 )
-			ss << "rtpvp9pay";
-		else if( mOptions.codec == videoOptions::CODEC_MJPEG )
-			ss << "rtpjpegpay";
+    //----------------------------------
+    // FULL FPS BRANCH
+    //----------------------------------
+    ss << "rawtee. ! queue ! ";
 
-		if( mOptions.codec == videoOptions::CODEC_H264 || mOptions.codec == videoOptions::CODEC_H265 ) 
-			ss << " config-interval=1";	// aggregate-mode=zero-latency";
-		
-		if( uri.protocol == "rtsp" )
-			ss << " name=pay0";	 // GstRTSPServer expects the payloaders to be named pay0, pay1, ect
-		else
-			ss << " ! ";
-		
-		if( uri.protocol == "rtp" )
-		{
-			ss << "udpsink host=" << uri.location << " ";
+    // If using V4L2 HW encoders (for H.264/H.265, etc.) and not MJPEG, need nvvidconv to get NVMM mem
+    if (mOptions.codecType == videoOptions::CODEC_V4L2 && mOptions.codec != videoOptions::CODEC_MJPEG)
+        ss << "nvvidconv name=vidconv ! video/x-raw(memory:NVMM), alignment=7 ! ";
 
-			if( uri.port != 0 )
-				ss << "port=" << uri.port;
+    // Select the encoder
+    const char* encoder = gst_select_encoder(mOptions.codec, mOptions.codecType);
+    if (!encoder)
+    {
+        LogError(LOG_GSTREAMER "gstEncoder -- unsupported codec requested (%s)\n", videoOptions::CodecToStr(mOptions.codec));
+        LogError(LOG_GSTREAMER "              supported encoder codecs are:\n");
+        LogError(LOG_GSTREAMER "                 * h264\n");
+        LogError(LOG_GSTREAMER "                 * h265\n");
+        LogError(LOG_GSTREAMER "                 * vp8\n");
+        LogError(LOG_GSTREAMER "                 * vp9\n");
+        LogError(LOG_GSTREAMER "                 * mjpeg\n");
+        return false;
+    }
 
-			ss << " auto-multicast=true";
-		}
-		else if( uri.protocol == "webrtc" )
-		{
-			ss << "application/x-rtp,media=video,encoding-name=" << videoOptions::CodecToStr(mOptions.codec) << ",clock-rate=90000,payload=96 ! ";
-			ss << "tee name=videotee ! queue ! fakesink";  // webrtcbin's will be added when clients connect
-		}
-	}
-	else if( uri.protocol == "rtpmp2ts" )
-	{
-		// https://forums.developer.nvidia.com/t/gstreamer-udp-to-vlc/215349/5
-		if( mOptions.codec == videoOptions::CODEC_H264 ) 
-			ss << "h264parse config-interval=1 ! mpegtsmux ! rtpmp2tpay ! udpsink host=";
-		else if (mOptions.codec == videoOptions::CODEC_H265 )
-			ss << "h265parse config-interval=1 ! mpegtsmux ! rtpmp2tpay ! udpsink host=";
-		else
-		{
-			LogError(LOG_GSTREAMER "gstEncoder -- rtpmp2ts output only supports h264 and h265. Unsupported codec (%s)\n", uri.extension.c_str());
-			return false;
-		}
- 		
-		ss << uri.location << " ";
+    // Setup encoder and options for the full-FPS branch
+    ss << encoder << " name=encoder ";
+    if (mOptions.codecType == videoOptions::CODEC_CPU)
+    {
+        if (mOptions.codec == videoOptions::CODEC_H264 || mOptions.codec == videoOptions::CODEC_H265)
+        {
+            ss << "bitrate=" << mOptions.bitRate / 1000 << " speed-preset=ultrafast tune=zerolatency ";
+            if (mOptions.deviceType == videoOptions::DEVICE_IP)
+                ss << "key-int-max=30 insert-vui=1 ";
+        }
+        else if (mOptions.codec == videoOptions::CODEC_VP8 || mOptions.codec == videoOptions::CODEC_VP9)
+        {
+            ss << "target-bitrate=" << mOptions.bitRate << " ";
+            if (mOptions.deviceType == videoOptions::DEVICE_IP)
+                ss << "keyframe-max-dist=30 ";
+        }
+    }
+    else if (mOptions.codec != videoOptions::CODEC_MJPEG)
+    {
+        ss << "bitrate=" << mOptions.bitRate << " ";
+        if (mOptions.deviceType == videoOptions::DEVICE_IP)
+        {
+            if (mOptions.codecType == videoOptions::CODEC_V4L2)
+                ss << "insert-sps-pps=1 insert-vui=1 idrinterval=30 ";
+            else if (mOptions.codecType == videoOptions::CODEC_OMX)
+                ss << "insert-sps-pps=1 insert-vui=1 ";
+        }
+        if (mOptions.codecType == videoOptions::CODEC_V4L2)
+            ss << "maxperf-enable=1 ";
+    }
 
-		if( uri.port != 0 )
-			ss << "port=" << uri.port;
+    // Add caps after encoder
+    if (mOptions.codec == videoOptions::CODEC_H264)
+        ss << "! video/x-h264 ! queue !";
+    else if (mOptions.codec == videoOptions::CODEC_H265)
+        ss << "! video/x-h265 ! ";
+    else if (mOptions.codec == videoOptions::CODEC_VP8)
+        ss << "! video/x-vp8 ! ";
+    else if (mOptions.codec == videoOptions::CODEC_VP9)
+        ss << "! video/x-vp9 ! ";
+    else if (mOptions.codec == videoOptions::CODEC_MJPEG)
+        ss << "! image/jpeg ! ";
 
-		ss << " auto-multicast=true";
-	}
-	else if( uri.protocol == "rtmp" )
-	{
-		ss << "flvmux streamable=true ! queue ! rtmpsink location=";
-		ss << uri.string << " ";
-	}
-	else
-	{
-		LogError(LOG_GSTREAMER "gstEncoder -- invalid protocol (%s)\n", uri.protocol.c_str());
-		return false;
-	}
+    // If saving the file
+    if (mOptions.save.path.length() > 0)
+    {
+        ss << "tee name=savetee savetee. ! queue ! ";
+        if (!gst_build_filesink(mOptions.save, mOptions.codec, ss))
+            return false;
+        // returning from filesink branch to the main full-fps branch is not needed,
+        // just end that branch there. If needed, the second "savetee." would go to fakesink or elsewhere.
+        // If you want to continue processing after saving, add another branch from savetee.
+        ss << "savetee. ! queue ! fakesink "; // for simplicity, fakesink. Remove if not needed.
+    }
+    else
+    {
+        // If no saving, just end this branch somewhere, or continue as needed
+        ss << "fakesink ";
+    }
 
-	mLaunchStr = ss.str();
+    //----------------------------------
+    // REDUCED FPS BRANCH (15 FPS)
+    //----------------------------------
+    // Now the second branch from rawtee goes through videorate to reduce FPS
+    ss << "rawtee. ! queue ! videorate ! video/x-raw,framerate=15/1 ! ";
 
-	LogInfo(LOG_GSTREAMER "gstEncoder -- pipeline launch string:\n");
-	LogInfo(LOG_GSTREAMER "%s\n", mLaunchStr.c_str());
+    // If using V4L2 HW encoder again
+    if (mOptions.codecType == videoOptions::CODEC_V4L2 && mOptions.codec != videoOptions::CODEC_MJPEG)
+        ss << "nvvidconv name=vidconv_15fps ! video/x-raw(memory:NVMM), alignment=7 ! ";
 
-	return true;
+    ss << encoder << " name=encoder_15fps ";
+
+    // Apply same encoder settings for 15fps branch
+    if (mOptions.codecType == videoOptions::CODEC_CPU)
+    {
+        if (mOptions.codec == videoOptions::CODEC_H264 || mOptions.codec == videoOptions::CODEC_H265)
+        {
+            ss << "bitrate=" << mOptions.bitRate / 1000 << " speed-preset=ultrafast tune=zerolatency ";
+            if (mOptions.deviceType == videoOptions::DEVICE_IP)
+                ss << "key-int-max=30 insert-vui=1 ";
+        }
+        else if (mOptions.codec == videoOptions::CODEC_VP8 || mOptions.codec == videoOptions::CODEC_VP9)
+        {
+            ss << "target-bitrate=" << mOptions.bitRate << " ";
+            if (mOptions.deviceType == videoOptions::DEVICE_IP)
+                ss << "keyframe-max-dist=30 ";
+        }
+    }
+    else if (mOptions.codec != videoOptions::CODEC_MJPEG)
+    {
+        ss << "bitrate=" << mOptions.bitRate << " ";
+        if (mOptions.deviceType == videoOptions::DEVICE_IP)
+        {
+            if (mOptions.codecType == videoOptions::CODEC_V4L2)
+                ss << "insert-sps-pps=1 insert-vui=1 idrinterval=30 ";
+            else if (mOptions.codecType == videoOptions::CODEC_OMX)
+                ss << "insert-sps-pps=1 insert-vui=1 ";
+        }
+        if (mOptions.codecType == videoOptions::CODEC_V4L2)
+            ss << "maxperf-enable=1 ";
+    }
+
+    if (mOptions.codec == videoOptions::CODEC_H264)
+        ss << "! video/x-h264 ! queue !";
+    else if (mOptions.codec == videoOptions::CODEC_H265)
+        ss << "! video/x-h265 ! ";
+    else if (mOptions.codec == videoOptions::CODEC_VP8)
+        ss << "! video/x-vp8 ! ";
+    else if (mOptions.codec == videoOptions::CODEC_VP9)
+        ss << "! video/x-vp9 ! ";
+    else if (mOptions.codec == videoOptions::CODEC_MJPEG)
+        ss << "! image/jpeg ! ";
+
+    // Handle different protocols for the reduced-FPS branch
+    if (uri.protocol == "file")
+    {
+        if (!gst_build_filesink(uri, mOptions.codec, ss))
+            return false;
+    }
+    else if (uri.protocol == "rtp" || uri.protocol == "rtsp" || uri.protocol == "webrtc")
+    {
+        if (mOptions.codec == videoOptions::CODEC_H264)
+            ss << "rtph264pay";
+        else if (mOptions.codec == videoOptions::CODEC_H265)
+            ss << "rtph265pay";
+        else if (mOptions.codec == videoOptions::CODEC_VP8)
+            ss << "rtpvp8pay";
+        else if (mOptions.codec == videoOptions::CODEC_VP9)
+            ss << "rtpvp9pay";
+        else if (mOptions.codec == videoOptions::CODEC_MJPEG)
+            ss << "rtpjpegpay";
+
+        if (mOptions.codec == videoOptions::CODEC_H264 || mOptions.codec == videoOptions::CODEC_H265) 
+            ss << " config-interval=1";
+
+        if (uri.protocol == "rtsp")
+            ss << " name=pay0";	
+        else
+            ss << " ! ";
+
+        if (uri.protocol == "rtp")
+        {
+            ss << "udpsink host=" << uri.location << " ";
+            if (uri.port != 0)
+                ss << "port=" << uri.port;
+            ss << " auto-multicast=true";
+        }
+        else if (uri.protocol == "webrtc")
+        {
+            ss << "application/x-rtp,media=video,encoding-name=" << videoOptions::CodecToStr(mOptions.codec)
+               << ",clock-rate=90000,payload=96 ! tee name=videotee videotee. ! queue ! fakesink";
+        }
+    }
+    else if (uri.protocol == "rtpmp2ts")
+    {
+        if (mOptions.codec == videoOptions::CODEC_H264) 
+            ss << "h264parse config-interval=1 ! mpegtsmux ! rtpmp2tpay ! udpsink host=";
+        else if (mOptions.codec == videoOptions::CODEC_H265)
+            ss << "h265parse config-interval=1 ! mpegtsmux ! rtpmp2tpay ! udpsink host=";
+        else
+        {
+            LogError(LOG_GSTREAMER "gstEncoder -- rtpmp2ts output only supports h264 and h265. Unsupported codec (%s)\n", uri.extension.c_str());
+            return false;
+        }
+        
+        ss << uri.location << " ";
+        if (uri.port != 0)
+            ss << "port=" << uri.port;
+        ss << " auto-multicast=true";
+    }
+    else if (uri.protocol == "rtmp")
+    {
+        ss << "flvmux streamable=true ! queue ! rtmpsink location=" << uri.string << " ";
+    }
+    else
+    {
+        LogError(LOG_GSTREAMER "gstEncoder -- invalid protocol (%s)\n", uri.protocol.c_str());
+        return false;
+    }
+
+    mLaunchStr = ss.str();
+
+    LogInfo(LOG_GSTREAMER "gstEncoder -- pipeline launch string:\n");
+    LogInfo(LOG_GSTREAMER "%s\n", mLaunchStr.c_str());
+
+    return true;
 }
+
+// // buildLaunchStr
+// bool gstEncoder::buildLaunchStr()
+// {
+// 	std::ostringstream ss;
+// 	ss << "appsrc name=mysource is-live=true do-timestamp=true format=3 ! queue !";  // setup appsrc input element
+	
+// 	const URI& uri = GetResource();
+// 	std::string encoderOptions = "";
+
+// 	// select the encoder
+// 	const char* encoder = gst_select_encoder(mOptions.codec, mOptions.codecType);
+	
+// 	if( !encoder )
+// 	{
+// 		LogError(LOG_GSTREAMER "gstEncoder -- unsupported codec requested (%s)\n", videoOptions::CodecToStr(mOptions.codec));
+// 		LogError(LOG_GSTREAMER "              supported encoder codecs are:\n");
+// 		LogError(LOG_GSTREAMER "                 * h264\n");
+// 		LogError(LOG_GSTREAMER "                 * h265\n");
+// 		LogError(LOG_GSTREAMER "                 * vp8\n");
+// 		LogError(LOG_GSTREAMER "                 * vp9\n");
+// 		LogError(LOG_GSTREAMER "                 * mjpeg\n");
+		
+// 		return false;
+// 	}
+	
+// 	// the V4L2 encoders expect NVMM memory, so use nvvidconv to convert it
+// 	if( mOptions.codecType == videoOptions::CODEC_V4L2 && mOptions.codec != videoOptions::CODEC_MJPEG )
+// 		ss << "nvvidconv name=vidconv ! video/x-raw(memory:NVMM), alignment=7 ! ";
+	
+// 	// setup the encoder and options
+// 	ss << encoder << " name=encoder ";
+	
+// 	if( mOptions.codecType == videoOptions::CODEC_CPU )
+// 	{
+// 		if( mOptions.codec == videoOptions::CODEC_H264 || mOptions.codec == videoOptions::CODEC_H265 )
+// 		{
+// 			ss << "bitrate=" << mOptions.bitRate / 1000 << " ";	// x264enc/x265enc bitrates are in kbits
+// 			ss << "speed-preset=ultrafast tune=zerolatency ";
+			
+// 			if( mOptions.deviceType == videoOptions::DEVICE_IP )
+// 				ss << "key-int-max=30 insert-vui=1 ";			// send keyframes/I-frames more frequently for network streams
+// 		}
+// 		else if( mOptions.codec == videoOptions::CODEC_VP8 || mOptions.codec == videoOptions::CODEC_VP9 )
+// 		{
+// 			ss << "target-bitrate=" << mOptions.bitRate << " ";
+			
+// 			if( mOptions.deviceType == videoOptions::DEVICE_IP )
+// 				ss << "keyframe-max-dist=30 ";
+// 		}
+// 	}
+// 	else if( mOptions.codec != videoOptions::CODEC_MJPEG )
+// 	{
+// 		ss << "bitrate=" << mOptions.bitRate << " ";
+		
+// 		if( mOptions.deviceType == videoOptions::DEVICE_IP )
+// 		{
+// 			if( mOptions.codecType == videoOptions::CODEC_V4L2 )
+// 				ss << "insert-sps-pps=1 insert-vui=1 idrinterval=30 ";
+// 			else if( mOptions.codecType == videoOptions::CODEC_OMX )
+// 				ss << "insert-sps-pps=1 insert-vui=1 ";
+// 		}
+		
+// 		if( mOptions.codecType == videoOptions::CODEC_V4L2 )
+// 			ss << "maxperf-enable=1 ";
+// 	}
+
+// 	if( mOptions.codec == videoOptions::CODEC_H264 )
+// 		ss << "! video/x-h264 ! queue !";
+// 	else if( mOptions.codec == videoOptions::CODEC_H265 )
+// 		ss << "! video/x-h265 ! ";
+// 	else if( mOptions.codec == videoOptions::CODEC_VP8 )
+// 		ss << "! video/x-vp8 ! ";
+// 	else if( mOptions.codec == videoOptions::CODEC_VP9 )
+// 		ss << "! video/x-vp9 ! ";
+// 	else if( mOptions.codec == videoOptions::CODEC_MJPEG )
+// 		ss << "! image/jpeg ! ";
+	
+// 	if( mOptions.save.path.length() > 0 )
+// 	{
+// 		ss << "tee name=savetee savetee. ! queue ! ";
+		
+// 		if( !gst_build_filesink(mOptions.save, mOptions.codec, ss) )
+// 			return false;
+
+// 		ss << "savetee. ! queue ! ";
+// 	}
+	
+// 	if( uri.protocol == "file" )
+// 	{
+// 		if( !gst_build_filesink(uri, mOptions.codec, ss) )
+// 			return false;
+// 	}
+// 	else if( uri.protocol == "rtp" || uri.protocol == "rtsp" || uri.protocol == "webrtc" )
+// 	{
+// 		if( mOptions.codec == videoOptions::CODEC_H264 )
+// 			ss << "rtph264pay";
+// 		else if( mOptions.codec == videoOptions::CODEC_H265 )
+// 			ss << "rtph265pay";
+// 		else if( mOptions.codec == videoOptions::CODEC_VP8 )
+// 			ss << "rtpvp8pay";
+// 		else if( mOptions.codec == videoOptions::CODEC_VP9 )
+// 			ss << "rtpvp9pay";
+// 		else if( mOptions.codec == videoOptions::CODEC_MJPEG )
+// 			ss << "rtpjpegpay";
+
+// 		if( mOptions.codec == videoOptions::CODEC_H264 || mOptions.codec == videoOptions::CODEC_H265 ) 
+// 			ss << " config-interval=1";	// aggregate-mode=zero-latency";
+		
+// 		if( uri.protocol == "rtsp" )
+// 			ss << " name=pay0";	 // GstRTSPServer expects the payloaders to be named pay0, pay1, ect
+// 		else
+// 			ss << " ! ";
+		
+// 		if( uri.protocol == "rtp" )
+// 		{
+// 			ss << "udpsink host=" << uri.location << " ";
+
+// 			if( uri.port != 0 )
+// 				ss << "port=" << uri.port;
+
+// 			ss << " auto-multicast=true";
+// 		}
+// 		else if( uri.protocol == "webrtc" )
+// 		{
+// 			ss << "application/x-rtp,media=video,encoding-name=" << videoOptions::CodecToStr(mOptions.codec) << ",clock-rate=90000,payload=96 ! ";
+// 			ss << "tee name=videotee ! queue ! fakesink";  // webrtcbin's will be added when clients connect
+// 		}
+// 	}
+// 	else if( uri.protocol == "rtpmp2ts" )
+// 	{
+// 		// https://forums.developer.nvidia.com/t/gstreamer-udp-to-vlc/215349/5
+// 		if( mOptions.codec == videoOptions::CODEC_H264 ) 
+// 			ss << "h264parse config-interval=1 ! mpegtsmux ! rtpmp2tpay ! udpsink host=";
+// 		else if (mOptions.codec == videoOptions::CODEC_H265 )
+// 			ss << "h265parse config-interval=1 ! mpegtsmux ! rtpmp2tpay ! udpsink host=";
+// 		else
+// 		{
+// 			LogError(LOG_GSTREAMER "gstEncoder -- rtpmp2ts output only supports h264 and h265. Unsupported codec (%s)\n", uri.extension.c_str());
+// 			return false;
+// 		}
+ 		
+// 		ss << uri.location << " ";
+
+// 		if( uri.port != 0 )
+// 			ss << "port=" << uri.port;
+
+// 		ss << " auto-multicast=true";
+// 	}
+// 	else if( uri.protocol == "rtmp" )
+// 	{
+// 		ss << "flvmux streamable=true ! queue ! rtmpsink location=";
+// 		ss << uri.string << " ";
+// 	}
+// 	else
+// 	{
+// 		LogError(LOG_GSTREAMER "gstEncoder -- invalid protocol (%s)\n", uri.protocol.c_str());
+// 		return false;
+// 	}
+
+// 	mLaunchStr = ss.str();
+
+// 	LogInfo(LOG_GSTREAMER "gstEncoder -- pipeline launch string:\n");
+// 	LogInfo(LOG_GSTREAMER "%s\n", mLaunchStr.c_str());
+
+// 	return true;
+// }
 
 
 // onNeedData

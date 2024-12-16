@@ -219,7 +219,7 @@ bool gstCamera::buildLaunchStr()
 			size=width;
 		}
 
-		ss << "nvarguscamerasrc sensor-mode=1 aelock=true awblock=true sensor-id=" << mOptions.resource.port << " ! video/x-raw(memory:NVMM), width=(int)" << GetWidth() << ", height=(int)" << GetHeight() << ", framerate=" << (int)mOptions.frameRate << "/1, format=(string)NV12 ! nvvidconv flip-method=" << mOptions.flipMethod << " left=" << left <<  " right=" << right << " top=" << top << " bottom=" << bottom << " ! ";
+		ss << "nvarguscamerasrc sensor-mode=2 aelock=true awblock=true sensor-id=" << mOptions.resource.port << " ! video/x-raw(memory:NVMM), width=(int)" << GetWidth() << ", height=(int)" << GetHeight() << ", framerate=" << (int)mOptions.frameRate << "/1, format=(string)NV12 ! nvvidconv flip-method=" << mOptions.flipMethod << " left=" << left <<  " right=" << right << " top=" << top << " bottom=" << bottom << " ! ";
 
 	#else
 		// older JetPack versions use nvcamerasrc element instead of nvarguscamerasrc
