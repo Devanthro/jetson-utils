@@ -162,7 +162,17 @@ protected:
 	
 	RTSPServer*   mRTSPServer;
 	WebRTCServer* mWebRTCServer;
+
+private:
+    std::string mFirstFrameTime;  // Timestamp of the first frame
+    bool mFirstFrame;             // Flag to track first frame
+    
+    // Helper function to get precise timestamp
+    GstDateTime* createGstDateTime() const;  // Creates GstDateTime for metadata
+    std::string createUTCTimeString() const; // Creates UTC string for logging
+
 };
  
- 
+
+
 #endif

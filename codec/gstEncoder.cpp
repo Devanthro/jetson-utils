@@ -41,6 +41,9 @@
 #include <strings.h>
 #include <unistd.h>
 
+#include <chrono>
+#include <iomanip>
+#include <algorithm>
 
 // supported video file extensions
 const char* gstEncoder::SupportedExtensions[] = { "mkv", "mp4", "qt", 
@@ -70,17 +73,17 @@ bool gstEncoder::IsSupportedExtension( const char* ext )
 
 
 // constructor
-gstEncoder::gstEncoder( const videoOptions& options ) : videoOutput(options)
-{	
-	mAppSrc       = NULL;
-	mBus          = NULL;
-	mBufferCaps   = NULL;
-	mPipeline     = NULL;
-	mRTSPServer   = NULL;
-	mWebRTCServer = NULL;
-	mNeedData     = false;
-
-	mBufferYUV.SetThreaded(false);
+// Constructor modification
+gstEncoder::gstEncoder(const videoOptions& options) : videoOutput(options) {
+    mAppSrc = NULL;
+    mBus = NULL;
+    mBufferCaps = NULL;
+    mPipeline = NULL;
+    mRTSPServer = NULL;
+    mWebRTCServer = NULL;
+    mNeedData = false;
+    mFirstFrame = true;
+    mBufferYUV.SetThreaded(false);
 }
 
 
@@ -227,7 +230,13 @@ bool gstEncoder::initPipeline()
 		return false;
 	}
 	
-	mAppSrc = appsrcElement;
+	// configure appsrc properties for accurate timestamps
+    g_object_set(G_OBJECT(appsrcElement),
+                 "do-timestamp", TRUE,      // Automatically timestamp buffers
+                 "is-live", TRUE,           // Live source
+                 NULL);
+                 
+    mAppSrc = appsrcElement;
 
 	g_signal_connect(appsrcElement, "need-data", G_CALLBACK(onNeedData), this);
 	g_signal_connect(appsrcElement, "enough-data", G_CALLBACK(onEnoughData), this);
@@ -386,12 +395,22 @@ bool gstEncoder::buildLaunchStr()
     if (mOptions.save.path.length() > 0)
     {
         ss << "tee name=savetee savetee. ! queue ! ";
-        if (!gst_build_filesink(mOptions.save, mOptions.codec, ss))
+        
+        // Add parser to generate proper caps for mp4mux
+        if (mOptions.save.extension == "mp4" || mOptions.save.extension == "qt")
+        {
+            if (mOptions.codec == videoOptions::CODEC_H264)
+                ss << "h264parse ! ";
+            else if (mOptions.codec == videoOptions::CODEC_H265)
+                ss << "h265parse ! ";
+            
+            ss << "mp4mux presentation-time=true ! ";
+            ss << "filesink location=\"" << mOptions.save.path << "\" ";
+        }
+        else if (!gst_build_filesink(mOptions.save, mOptions.codec, ss))
             return false;
-        // returning from filesink branch to the main full-fps branch is not needed,
-        // just end that branch there. If needed, the second "savetee." would go to fakesink or elsewhere.
-        // If you want to continue processing after saving, add another branch from savetee.
-        ss << "savetee. ! queue ! fakesink "; // for simplicity, fakesink. Remove if not needed.
+
+        ss << "savetee. ! queue ! fakesink ";
     }
     else
     {
@@ -455,7 +474,19 @@ bool gstEncoder::buildLaunchStr()
     // Handle different protocols for the reduced-FPS branch
     if (uri.protocol == "file")
     {
-        if (!gst_build_filesink(uri, mOptions.codec, ss))
+        // Use mp4mux with presentation-time=true for more accurate timestamps
+        if (uri.extension == "mp4" || uri.extension == "qt") 
+        {
+            // Add parser to generate proper caps for mp4mux
+            if (mOptions.codec == videoOptions::CODEC_H264)
+                ss << "h264parse ! ";
+            else if (mOptions.codec == videoOptions::CODEC_H265)
+                ss << "h265parse ! ";
+            
+            ss << "mp4mux presentation-time=true ! ";
+            ss << "filesink location=\"" << uri.string << "\" ";
+        }
+        else if (!gst_build_filesink(uri, mOptions.codec, ss))
             return false;
     }
     else if (uri.protocol == "rtp" || uri.protocol == "rtsp" || uri.protocol == "webrtc")
@@ -850,12 +881,59 @@ bool gstEncoder::encodeYUV( void* buffer, size_t size )
 // Render
 bool gstEncoder::Render( void* image, uint32_t width, uint32_t height, imageFormat format, cudaStream_t stream )
 {	
-	// update the webrtc server if needed
-	if( mWebRTCServer != NULL && !mWebRTCServer->IsThreaded() )
-		mWebRTCServer->ProcessRequests();	
-	
-	// increment frame counter
-	mOptions.frameCount += 1;
+       if (mFirstFrame) {
+        // Get current UTC time and format filename
+        mFirstFrameTime = createUTCTimeString();
+        mFirstFrame = false;
+        LogInfo(LOG_GSTREAMER "First frame received at (UTC): %s\n", mFirstFrameTime.c_str());
+        
+        // Update the output filename with the timestamp
+        if (mPipeline && !mFirstFrameTime.empty()) {
+            std::string timestamp = mFirstFrameTime;
+            // Replace special characters for filename safety
+            for(char& c : timestamp) {
+                if(c == ':' || c == ' ')
+                    c = '_';
+            }
+            
+            // Print all elements in the pipeline for debugging
+            GstIterator* it = gst_bin_iterate_elements(GST_BIN(mPipeline));
+            GValue item = G_VALUE_INIT;
+            while (gst_iterator_next(it, &item) == GST_ITERATOR_OK) {
+                GstElement* element = GST_ELEMENT(g_value_get_object(&item));
+                LogInfo(LOG_GSTREAMER "Pipeline element: %s\n", GST_ELEMENT_NAME(element));
+                g_value_reset(&item);
+            }
+            gst_iterator_free(it);
+            
+            // Try to find filesink by iterating through elements
+            GList* elements = GST_BIN(mPipeline)->children;
+            while(elements) {
+                GstElement* element = GST_ELEMENT(elements->data);
+                if(GST_IS_ELEMENT(element) && g_str_has_prefix(GST_ELEMENT_NAME(element), "filesink")) {
+                    // Extract directory path and extension from original filename
+                    std::string dir = mOptions.save.path.substr(0, mOptions.save.path.find_last_of("/\\") + 1);
+                    std::string ext = mOptions.save.extension;
+                    
+                    // Create new filename with UTC timestamp
+                    std::string newPath = dir + timestamp + "." + ext;
+                    LogInfo(LOG_GSTREAMER "Attempting to update filesink path to: %s\n", newPath.c_str());
+                    g_object_set(G_OBJECT(element), "location", newPath.c_str(), NULL);
+                    
+                    LogInfo(LOG_GSTREAMER "Output file path updated to: %s\n", newPath.c_str());
+                    break;
+                }
+                elements = elements->next;
+            }
+        }
+    }
+    
+    // update the webrtc server if needed
+    if (mWebRTCServer != NULL && !mWebRTCServer->IsThreaded())
+        mWebRTCServer->ProcessRequests();    
+    
+    // increment frame counter
+    mOptions.frameCount += 1;
 		
 	// verify image dimensions
 	if( !image || width == 0 || height == 0 )
@@ -1166,4 +1244,41 @@ void gstEncoder::onWebsocketMessage( WebRTCPeer* peer, const char* message, size
 	}
 	
 	gstWebRTC::onWebsocketMessage(peer, message, message_size, user_data);
+}
+
+
+GstDateTime* gstEncoder::createGstDateTime() const {
+    using namespace std::chrono;
+    auto now = system_clock::now();
+    auto ms = duration_cast<milliseconds>(now.time_since_epoch()) % 1000;
+    auto timer = system_clock::to_time_t(now);
+    std::tm* utc = std::gmtime(&timer);  // Use GMT/UTC time
+    
+    // Create GstDateTime with microsecond precision
+    GstDateTime* datetime = gst_date_time_new(
+        0,  // UTC timezone offset
+        utc->tm_year + 1900,
+        utc->tm_mon + 1,
+        utc->tm_mday,
+        utc->tm_hour,
+        utc->tm_min,
+        utc->tm_sec + (static_cast<double>(ms.count()) / 1000.0)  // Add milliseconds as decimal seconds
+    );
+    
+    return datetime;
+}
+
+// Helper function for UTC string creation
+std::string gstEncoder::createUTCTimeString() const {
+    using namespace std::chrono;
+    auto now = system_clock::now();
+    auto ms = duration_cast<milliseconds>(now.time_since_epoch()) % 1000;
+    auto timer = system_clock::to_time_t(now);
+    std::tm* utc = std::gmtime(&timer);
+    std::ostringstream oss;
+    
+    oss << std::put_time(utc, "%Y-%m-%d %H:%M:%S")
+        << '.' << std::setfill('0') << std::setw(3) << ms.count() << "Z";  // Added Z to indicate UTC
+    
+    return oss.str();
 }
