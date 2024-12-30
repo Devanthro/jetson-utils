@@ -916,7 +916,7 @@ bool gstEncoder::Render( void* image, uint32_t width, uint32_t height, imageForm
                     std::string ext = mOptions.save.extension;
                     
                     // Create new filename with UTC timestamp
-                    std::string newPath = dir + timestamp + "." + ext;
+                    std::string newPath = dir + std::to_string(mOptions.resource.port)  + "_" + timestamp + "." + ext;
                     LogInfo(LOG_GSTREAMER "Attempting to update filesink path to: %s\n", newPath.c_str());
                     g_object_set(G_OBJECT(element), "location", newPath.c_str(), NULL);
                     
