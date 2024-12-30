@@ -244,4 +244,17 @@ const char* videoOutput::TypeToStr( uint32_t type )
 	return "(unknown)";
 }
 
+bool videoOutput::StartRecording()
+{
+    return false;
+}
 
+void videoOutput::StopRecording()
+{
+
+}
+
+bool videoOutput::IsRecording() const
+{
+    return false;
+}

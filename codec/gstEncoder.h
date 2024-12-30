@@ -130,6 +130,10 @@ public:
 	 */
 	static bool IsSupportedExtension( const char* ext );
 
+	virtual bool StartRecording();
+	virtual void StopRecording();
+	virtual bool IsRecording() const;
+
 protected:
 	gstEncoder( const videoOptions& options );
 	
@@ -163,14 +167,26 @@ protected:
 	RTSPServer*   mRTSPServer;
 	WebRTCServer* mWebRTCServer;
 
-private:
-    std::string mFirstFrameTime;  // Timestamp of the first frame
-    bool mFirstFrame;             // Flag to track first frame
-    
-    // Helper function to get precise timestamp
-    GstDateTime* createGstDateTime() const;  // Creates GstDateTime for metadata
-    std::string createUTCTimeString() const; // Creates UTC string for logging
 
+
+private:
+    // std::string mFirstFrameTime;  // Timestamp of the first frame
+    // bool mFirstFrame;             // Flag to track first frame
+    
+
+	GstDateTime* createGstDateTime() const;
+    std::string createUTCTimeString() const;
+    
+    // New member variables
+    bool mRecording;
+    bool mFirstFrame;
+    std::string mFirstFrameTime;
+    GstElement* mRecordingBin;      // Container for recording elements
+    GstElement* mRecordingFileSink; // File sink element for recording
+
+    GstElement* mRecordingValve;  // Valve element to control recording flow
+
+    // void updateRecordingFilename();
 };
  
 

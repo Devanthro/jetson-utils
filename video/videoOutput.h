@@ -322,6 +322,11 @@ public:
 	 */
 	static const char* TypeToStr( uint32_t type );
 
+	virtual bool StartRecording();
+	virtual void StopRecording();
+	virtual bool IsRecording() const;
+
+
 protected:
 	videoOutput( const videoOptions& options );
 

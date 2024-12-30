@@ -22,11 +22,17 @@
 
 #include "videoSource.h"
 #include "videoOutput.h"
+#include "gstEncoder.h"
 
 #include "logging.h"
 #include "commandLine.h"
 
 #include <signal.h>
+
+
+#include <termios.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 bool signal_recieved = false;
 
@@ -53,6 +59,35 @@ int usage()
 	printf("%s", Log::Usage());
 
 	return 0;
+}
+
+char kbhit() {
+    struct termios oldt, newt;
+    int ch;
+    int oldf;
+
+    // Save old terminal settings
+    tcgetattr(STDIN_FILENO, &oldt);
+    
+    // Set terminal to non-blocking raw mode
+    newt = oldt;
+    newt.c_lflag &= ~(ICANON | ECHO);
+    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+    oldf = fcntl(STDIN_FILENO, F_GETFL, 0);
+    fcntl(STDIN_FILENO, F_SETFL, oldf | O_NONBLOCK);
+
+    // Check for character
+    ch = getchar();
+
+    // Restore old terminal settings
+    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+    fcntl(STDIN_FILENO, F_SETFL, oldf);
+
+    if(ch != EOF) {
+        return (char)ch;
+    }
+
+    return 0;
 }
 
 int main( int argc, char** argv )
@@ -118,6 +153,23 @@ int main( int argc, char** argv )
 			
 			break; // EOS
 		}
+
+		char key = kbhit();
+		if(key == 'r') {
+			if(output->IsType(gstEncoder::Type))
+				{
+				if(output->IsRecording()) {
+					output->StopRecording();
+					// printf("Recording triggered\n");
+				} else {
+					output->StartRecording();
+						// printf("Recording started\n");
+					// else
+						// printf("Failed to start recording\n");
+				}
+		}
+		}
+    
 
 		if( numFrames % 25 == 0 || numFrames < 15 )
 			LogVerbose("video-viewer:  captured %u frames (%ux%u)\n", numFrames, input->GetWidth(), input->GetHeight());

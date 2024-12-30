@@ -83,6 +83,9 @@ gstEncoder::gstEncoder(const videoOptions& options) : videoOutput(options) {
     mWebRTCServer = NULL;
     mNeedData = false;
     mFirstFrame = true;
+	mRecording = false;
+    mRecordingValve = NULL;
+    mRecordingFileSink = NULL;
     mBufferYUV.SetThreaded(false);
 }
 
@@ -90,6 +93,9 @@ gstEncoder::gstEncoder(const videoOptions& options) : videoOutput(options) {
 // destructor	
 gstEncoder::~gstEncoder()
 {
+	if(mRecording)
+        StopRecording();
+
 	Close();
 
 	if( mRTSPServer != NULL )
@@ -397,18 +403,25 @@ bool gstEncoder::buildLaunchStr()
         ss << "tee name=savetee savetee. ! queue ! ";
         
         // Add parser to generate proper caps for mp4mux
-        if (mOptions.save.extension == "mp4" || mOptions.save.extension == "qt")
-        {
-            if (mOptions.codec == videoOptions::CODEC_H264)
-                ss << "h264parse ! ";
-            else if (mOptions.codec == videoOptions::CODEC_H265)
-                ss << "h265parse ! ";
-            
-            ss << "mp4mux presentation-time=true ! ";
-            ss << "filesink location=\"" << mOptions.save.path << "\" ";
-        }
-        else if (!gst_build_filesink(mOptions.save, mOptions.codec, ss))
-            return false;
+        // Add valve element after parser but before muxer
+		LogWarning(LOG_GSTREAMER "gstEncoder -- URI Extension is %s\n", uri.extension.c_str());
+		//if(uri.extension == "mp4" || uri.extension == "qt") {
+			if(mOptions.codec == videoOptions::CODEC_H264)
+				ss << "h264parse ! ";
+			else if(mOptions.codec == videoOptions::CODEC_H265)
+				ss << "h265parse ! ";
+				
+			LogInfo(LOG_GSTREAMER "gstEncoder -- valve added\n");
+
+			ss << "valve name=recording_valve drop=true ! ";
+    		// Add initial valve to prevent filesink from opening
+    		ss << "valve name=init_valve drop=true ! ";
+				
+			ss << "mp4mux presentation-time=true ! ";
+			ss << "filesink name=recording_sink location=/home/alice/test_videos/placeholder.mp4 ";
+		//}
+        //else if (!gst_build_filesink(mOptions.save, mOptions.codec, ss))
+        //    return false;
 
         ss << "savetee. ! queue ! fakesink ";
     }
@@ -881,52 +894,41 @@ bool gstEncoder::encodeYUV( void* buffer, size_t size )
 // Render
 bool gstEncoder::Render( void* image, uint32_t width, uint32_t height, imageFormat format, cudaStream_t stream )
 {	
-       if (mFirstFrame) {
-        // Get current UTC time and format filename
-        mFirstFrameTime = createUTCTimeString();
-        mFirstFrame = false;
-        LogInfo(LOG_GSTREAMER "First frame received at (UTC): %s\n", mFirstFrameTime.c_str());
-        
-        // Update the output filename with the timestamp
-        if (mPipeline && !mFirstFrameTime.empty()) {
-            std::string timestamp = mFirstFrameTime;
-            // Replace special characters for filename safety
-            for(char& c : timestamp) {
-                if(c == ':' || c == ' ')
-                    c = '_';
-            }
-            
-            // Print all elements in the pipeline for debugging
-            GstIterator* it = gst_bin_iterate_elements(GST_BIN(mPipeline));
-            GValue item = G_VALUE_INIT;
-            while (gst_iterator_next(it, &item) == GST_ITERATOR_OK) {
-                GstElement* element = GST_ELEMENT(g_value_get_object(&item));
-                LogInfo(LOG_GSTREAMER "Pipeline element: %s\n", GST_ELEMENT_NAME(element));
-                g_value_reset(&item);
-            }
-            gst_iterator_free(it);
-            
-            // Try to find filesink by iterating through elements
-            GList* elements = GST_BIN(mPipeline)->children;
-            while(elements) {
-                GstElement* element = GST_ELEMENT(elements->data);
-                if(GST_IS_ELEMENT(element) && g_str_has_prefix(GST_ELEMENT_NAME(element), "filesink")) {
-                    // Extract directory path and extension from original filename
-                    std::string dir = mOptions.save.path.substr(0, mOptions.save.path.find_last_of("/\\") + 1);
-                    std::string ext = mOptions.save.extension;
-                    
-                    // Create new filename with UTC timestamp
-                    std::string newPath = dir + timestamp + "." + ext;
-                    LogInfo(LOG_GSTREAMER "Attempting to update filesink path to: %s\n", newPath.c_str());
-                    g_object_set(G_OBJECT(element), "location", newPath.c_str(), NULL);
-                    
-                    LogInfo(LOG_GSTREAMER "Output file path updated to: %s\n", newPath.c_str());
-                    break;
-                }
-                elements = elements->next;
-            }
-        }
-    }
+	if (mFirstFrame) {
+		mFirstFrameTime = createUTCTimeString();
+		mFirstFrame = false;
+		LogInfo(LOG_GSTREAMER "First frame received at (UTC): %s\n", mFirstFrameTime.c_str());
+		
+		if (mPipeline && !mFirstFrameTime.empty()) {
+			// Get the initial valve
+			GstElement* initValve = gst_bin_get_by_name(GST_BIN(mPipeline), "init_valve");
+			if (initValve) {
+				// Keep valve closed while we update filename
+				g_object_set(G_OBJECT(initValve), "drop", TRUE, NULL);
+				
+				// Update filename
+				std::string timestamp = mFirstFrameTime;
+				for(char& c : timestamp) {
+					if(c == ':' || c == ' ')
+						c = '_';
+				}
+				
+				GstElement* sink = gst_bin_get_by_name(GST_BIN(mPipeline), "recording_sink");
+				if (sink) {
+					std::string dir = mOptions.save.path.substr(0, mOptions.save.path.find_last_of("/\\") + 1);
+					std::string ext = mOptions.save.extension;
+					std::string newPath = dir + timestamp + "." + ext;
+					g_object_set(G_OBJECT(sink), "location", newPath.c_str(), NULL);
+					gst_object_unref(sink);
+					
+					// Now open the valve
+					g_object_set(G_OBJECT(initValve), "drop", FALSE, NULL);
+				}
+				
+				gst_object_unref(initValve);
+			}
+		}
+	}
     
     // update the webrtc server if needed
     if (mWebRTCServer != NULL && !mWebRTCServer->IsThreaded())
@@ -1278,7 +1280,77 @@ std::string gstEncoder::createUTCTimeString() const {
     std::ostringstream oss;
     
     oss << std::put_time(utc, "%Y-%m-%d %H:%M:%S")
-        << '.' << std::setfill('0') << std::setw(3) << ms.count() << "Z";  // Added Z to indicate UTC
+        << '_' << std::setfill('0') << std::setw(3) << ms.count() << "Z";  // Added Z to indicate UTC
     
     return oss.str();
+}
+
+bool gstEncoder::StartRecording()
+{
+    if(mRecording)
+        return true;
+        
+    LogInfo(LOG_GSTREAMER "gstEncoder -- starting recording\n");
+    
+    // Get the valve element that controls recording
+    mRecordingValve = gst_bin_get_by_name(GST_BIN(mPipeline), "recording_valve");
+    if(!mRecordingValve) {
+        LogError(LOG_GSTREAMER "gstEncoder -- failed to find recording valve element\n");
+        return false;
+    }
+    
+    // Get the filesink element
+    mRecordingFileSink = gst_bin_get_by_name(GST_BIN(mPipeline), "recording_sink");
+    if(!mRecordingFileSink) {
+        LogError(LOG_GSTREAMER "gstEncoder -- failed to find recording filesink element\n");
+        gst_object_unref(mRecordingValve);
+        return false;
+    }
+    
+    // Update the output filename with current timestamp
+    std::string timestamp = createUTCTimeString();
+    for(char& c : timestamp) {
+        if(c == ':' || c == ' ')
+            c = '_';
+    }
+    
+    std::string recordingPath = "/home/alice/test_videos/" + timestamp + ".mp4";
+    // g_object_set(G_OBJECT(mRecordingFileSink), "location", recordingPath.c_str(), NULL);
+    
+    // Open the valve
+    g_object_set(G_OBJECT(mRecordingValve), "drop", FALSE, NULL);
+    
+    mRecording = true;
+    LogInfo(LOG_GSTREAMER "gstEncoder -- recording started: %s\n", recordingPath.c_str());
+    return true;
+}
+
+void gstEncoder::StopRecording()
+{
+    if(!mRecording)
+        return;
+        
+    LogInfo(LOG_GSTREAMER "gstEncoder -- stopping recording\n");
+    
+    if(mRecordingValve) {
+        // Close the valve to stop the flow
+        g_object_set(G_OBJECT(mRecordingValve), "drop", TRUE, NULL);
+        
+        // Send EOS downstream from the valve
+        GstPad* pad = gst_element_get_static_pad(mRecordingValve, "sink");
+        if(pad) {
+            gst_pad_send_event(pad, gst_event_new_eos());
+            gst_object_unref(pad);
+        }
+        
+        gst_object_unref(mRecordingValve);
+        mRecordingValve = NULL;
+    }
+    
+    mRecording = false;
+}
+
+bool gstEncoder::IsRecording() const
+{
+    return mRecording;
 }
