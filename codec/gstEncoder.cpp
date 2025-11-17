@@ -308,14 +308,14 @@ bool gstEncoder::buildCapsStr()
 bool gstEncoder::buildLaunchStr()
 {
 	std::ostringstream ss;
-	ss << "appsrc name=mysource is-live=true do-timestamp=true format=3 ! queue !";  // setup appsrc input element
-	
+	ss << "appsrc name=mysource is-live=true do-timestamp=true format=3 ! queue max-size-buffers=1 leaky=downstream !";  // setup appsrc input element with minimal buffering
+
 	const URI& uri = GetResource();
 	std::string encoderOptions = "";
 
 	// select the encoder
 	const char* encoder = gst_select_encoder(mOptions.codec, mOptions.codecType);
-	
+
 	if( !encoder )
 	{
 		LogError(LOG_GSTREAMER "gstEncoder -- unsupported codec requested (%s)\n", videoOptions::CodecToStr(mOptions.codec));
@@ -328,14 +328,14 @@ bool gstEncoder::buildLaunchStr()
 		
 		return false;
 	}
-	
+
 	// the V4L2 encoders expect NVMM memory, so use nvvidconv to convert it
 	if( mOptions.codecType == videoOptions::CODEC_V4L2 && mOptions.codec != videoOptions::CODEC_MJPEG )
 		ss << "nvvidconv name=vidconv ! video/x-raw(memory:NVMM), alignment=7 ! ";
-	
+
 	// setup the encoder and options
 	ss << encoder << " name=encoder ";
-	
+
 	if( mOptions.codecType == videoOptions::CODEC_CPU )
 	{
 		if( mOptions.codec == videoOptions::CODEC_H264 || mOptions.codec == videoOptions::CODEC_H265 )
@@ -361,7 +361,17 @@ bool gstEncoder::buildLaunchStr()
 		if( mOptions.deviceType == videoOptions::DEVICE_IP )
 		{
 			if( mOptions.codecType == videoOptions::CODEC_V4L2 )
-				ss << "insert-sps-pps=1 insert-vui=1 idrinterval=30 ";
+			{
+				ss << "MeasureEncoderLatency=1 "; 
+				ss << "preset-level=1 ";                    // Fastest encoding preset (ultrafast equivalent)
+				ss << "profile=0 ";                         // Baseline profile for lower complexity
+				ss << "insert-sps-pps=1 ";    // Keep SPS/PPS insertion
+				ss << "idrinterval=30 ";                    // Keyframe interval
+				ss << "num-B-Frames=0 ";                    // Disable B-frames (zerolatency equivalent)
+				ss << "disable-cabac=1 ";                   // Use CAVLC for faster entropy coding
+				ss << "EnableTwopassCBR=0 ";                // Single-pass encoding
+				// ss << "insert-aud=1 ";   
+		}
 			else if( mOptions.codecType == videoOptions::CODEC_OMX )
 				ss << "insert-sps-pps=1 insert-vui=1 ";
 		}
@@ -371,16 +381,17 @@ bool gstEncoder::buildLaunchStr()
 	}
 
 	if( mOptions.codec == videoOptions::CODEC_H264 )
-		ss << "! video/x-h264 ! queue !";
+		ss << "! video/x-h264,stream-format=byte-stream,alignment=au ! queue max-size-buffers=1 leaky=downstream !";
+		// ss << "! video/x-h264,stream-format=byte-stream ! queue max-size-buffers=1 leaky=downstream !";
 	else if( mOptions.codec == videoOptions::CODEC_H265 )
-		ss << "! video/x-h265 ! ";
+		ss << "! video/x-h265,stream-format=byte-stream,alignment=au ! queue max-size-buffers=1 leaky=downstream !";
 	else if( mOptions.codec == videoOptions::CODEC_VP8 )
 		ss << "! video/x-vp8 ! ";
 	else if( mOptions.codec == videoOptions::CODEC_VP9 )
 		ss << "! video/x-vp9 ! ";
 	else if( mOptions.codec == videoOptions::CODEC_MJPEG )
 		ss << "! image/jpeg ! ";
-	
+
 	if( mOptions.save.path.length() > 0 )
 	{
 		ss << "tee name=savetee savetee. ! queue ! ";
@@ -390,7 +401,7 @@ bool gstEncoder::buildLaunchStr()
 
 		ss << "savetee. ! queue ! ";
 	}
-	
+
 	if( uri.protocol == "file" )
 	{
 		if( !gst_build_filesink(uri, mOptions.codec, ss) )
@@ -409,8 +420,13 @@ bool gstEncoder::buildLaunchStr()
 		else if( mOptions.codec == videoOptions::CODEC_MJPEG )
 			ss << "rtpjpegpay";
 
-		if( mOptions.codec == videoOptions::CODEC_H264 || mOptions.codec == videoOptions::CODEC_H265 ) 
-			ss << " config-interval=1";	// aggregate-mode=zero-latency";
+		if( mOptions.codec == videoOptions::CODEC_H264 || mOptions.codec == videoOptions::CODEC_H265 )
+		{
+			// Ultra-low latency RTP payload settings
+			ss << " config-interval=-1";           // Send SPS/PPS with every IDR (works with insert-sps-pps=1)
+			ss << " mtu=1400";                     // Optimize MTU for network
+			ss << " aggregate-mode=zero-latency";  // Zero-latency aggregation mode
+		}
 		
 		if( uri.protocol == "rtsp" )
 			ss << " name=pay0";	 // GstRTSPServer expects the payloaders to be named pay0, pay1, ect
@@ -424,12 +440,12 @@ bool gstEncoder::buildLaunchStr()
 			if( uri.port != 0 )
 				ss << "port=" << uri.port;
 
-			ss << " auto-multicast=true";
+			ss << " auto-multicast=true sync=false";  // Disable sync for lower latency
 		}
 		else if( uri.protocol == "webrtc" )
 		{
 			ss << "application/x-rtp,media=video,encoding-name=" << videoOptions::CodecToStr(mOptions.codec) << ",clock-rate=90000,payload=96 ! ";
-			ss << "tee name=videotee ! queue ! fakesink";  // webrtcbin's will be added when clients connect
+			ss << "tee name=videotee ! queue max-size-buffers=1 leaky=downstream ! fakesink sync=false";  // Minimal buffering in tee
 		}
 	}
 	else if( uri.protocol == "rtpmp2ts" )
@@ -444,13 +460,13 @@ bool gstEncoder::buildLaunchStr()
 			LogError(LOG_GSTREAMER "gstEncoder -- rtpmp2ts output only supports h264 and h265. Unsupported codec (%s)\n", uri.extension.c_str());
 			return false;
 		}
- 		
+		
 		ss << uri.location << " ";
 
 		if( uri.port != 0 )
 			ss << "port=" << uri.port;
 
-		ss << " auto-multicast=true";
+		ss << " auto-multicast=true sync=false";  // Disable sync for lower latency
 	}
 	else if( uri.protocol == "rtmp" )
 	{

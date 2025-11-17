@@ -541,6 +541,7 @@ static bool gst_query_hw_encoder()
 // gst_select_encoder
 const char* gst_select_encoder( videoOptions::Codec codec, videoOptions::CodecType& type )
 {
+	//type = videoOptions::CODEC_CPU;
 #if defined(__aarch64__)
 #if NV_TENSORRT_MAJOR > 8 || (NV_TENSORRT_MAJOR == 8 && NV_TENSORRT_MINOR >= 4)
 	if( type == videoOptions::CODEC_OMX )

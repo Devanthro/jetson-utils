@@ -226,7 +226,7 @@ bool gstCamera::buildLaunchStr()
 		ss << "nvcamerasrc fpsRange=\"" << (int)mOptions.frameRate << " " << (int)mOptions.frameRate << "\" ! video/x-raw(memory:NVMM), width=(int)" << GetWidth() << ", height=(int)" << GetHeight() << ", format=(string)NV12 ! nvvidconv flip-method=" << mOptions.flipMethod << " ! "; //'video/x-raw(memory:NVMM), width=(int)1920, height=(int)1080, format=(string)I420, framerate=(fraction)30/1' ! ";
 	#endif
 		
-		if (enable_nvmm) {
+	if (enable_nvmm) {
 			ss << "video/x-raw(memory:NVMM) ! ";
 		} else {
 				ss << "video/x-raw, width=(int)" << std::to_string(size) << ", height=(int)" << std::to_string(size) << ", alignment=7 ! ";
