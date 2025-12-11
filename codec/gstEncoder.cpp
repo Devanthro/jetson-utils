@@ -172,11 +172,11 @@ bool gstEncoder::initPipeline()
 
 	// check if default framerate is needed
 	if( mOptions.frameRate <= 0 )
-		mOptions.frameRate = 30;
+		mOptions.frameRate = 21;
 
 	// set default bitrate if needed
 	if( mOptions.bitRate == 0 )
-		mOptions.bitRate = 4000000; 
+		mOptions.bitRate = 8000000; 
 	
 	// build pipeline string
 	if( !buildLaunchStr() )
@@ -362,16 +362,16 @@ bool gstEncoder::buildLaunchStr()
 		{
 			if( mOptions.codecType == videoOptions::CODEC_V4L2 )
 			{
-				ss << "MeasureEncoderLatency=1 "; 
+				// ss << "MeasureEncoderLatency=1 "; 
 				ss << "preset-level=1 ";                    // Fastest encoding preset (ultrafast equivalent)
 				ss << "profile=0 ";                         // Baseline profile for lower complexity
-				ss << "insert-sps-pps=1 ";    // Keep SPS/PPS insertion
-				ss << "idrinterval=30 ";                    // Keyframe interval
+				ss << "insert-sps-pps=1 ";    				// Keep SPS/PPS insertion
+				ss << "idrinterval=5 ";                    // Keyframe interval
 				ss << "num-B-Frames=0 ";                    // Disable B-frames (zerolatency equivalent)
-				ss << "disable-cabac=1 ";                   // Use CAVLC for faster entropy coding
+				// ss << "disable-cabac=1 ";                   // Use CAVLC for faster entropy coding
 				ss << "EnableTwopassCBR=0 ";                // Single-pass encoding
 				// ss << "insert-aud=1 ";   
-		}
+			}
 			else if( mOptions.codecType == videoOptions::CODEC_OMX )
 				ss << "insert-sps-pps=1 insert-vui=1 ";
 		}
@@ -424,8 +424,8 @@ bool gstEncoder::buildLaunchStr()
 		{
 			// Ultra-low latency RTP payload settings
 			ss << " config-interval=-1";           // Send SPS/PPS with every IDR (works with insert-sps-pps=1)
-			ss << " mtu=1400";                     // Optimize MTU for network
-			ss << " aggregate-mode=zero-latency";  // Zero-latency aggregation mode
+			ss << " mtu=1000";                     // Optimize MTU for network
+			//ss << " aggregate-mode=zero-latency";  // Zero-latency aggregation mode
 		}
 		
 		if( uri.protocol == "rtsp" )
