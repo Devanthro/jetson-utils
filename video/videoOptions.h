@@ -90,6 +90,13 @@ public:
 	uint32_t bitRate;
 
 	/**
+	 * The IDR/keyframe interval for encoded video streams (only applies to video codecs like H264/H265).
+	 * For videoOutput streams, this option can be set from the command line using `--idrinterval=N`.
+	 * @note the default IDR interval is 5 frames.
+	 */
+	uint32_t idrInterval;
+
+	/**
 	 * The number of ring buffers used for threading.
 	 * This option can be set from the command line using `--num-buffers=N`.
 	 * @note the default number of ring buffers is 4.

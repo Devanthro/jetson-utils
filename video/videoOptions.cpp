@@ -35,6 +35,7 @@ videoOptions::videoOptions()
 	frameRate   = 0;
 	frameCount  = 0;
 	bitRate     = 0;
+	idrInterval = 5;
 	numBuffers  = 4;
 	loop        = 0;
 	latency     = 10;
@@ -231,6 +232,10 @@ bool videoOptions::Parse( const char* URI, const commandLine& cmdLine, videoOpti
 	// bitrate
 	if( type == OUTPUT )
 		bitRate = cmdLine.GetUnsignedInt("bitrate", bitRate);
+
+	// IDR/keyframe interval
+	if( type == OUTPUT )
+		idrInterval = cmdLine.GetUnsignedInt("idrinterval", idrInterval);
 
 	// loop
 	if( type == INPUT )

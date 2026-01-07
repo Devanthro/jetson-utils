@@ -366,7 +366,7 @@ bool gstEncoder::buildLaunchStr()
 				ss << "preset-level=1 ";                    // Fastest encoding preset (ultrafast equivalent)
 				ss << "profile=0 ";                         // Baseline profile for lower complexity
 				ss << "insert-sps-pps=1 ";    				// Keep SPS/PPS insertion
-				ss << "idrinterval=5 ";                    // Keyframe interval
+				ss << "idrinterval=" << mOptions.idrInterval << " ";  // Keyframe interval
 				ss << "num-B-Frames=0 ";                    // Disable B-frames (zerolatency equivalent)
 				// ss << "disable-cabac=1 ";                   // Use CAVLC for faster entropy coding
 				ss << "EnableTwopassCBR=0 ";                // Single-pass encoding
