@@ -228,6 +228,25 @@ public:
 	virtual void Close();
 
 	/**
+	 * Start recording to a new MP4 file segment.
+	 * Only supported by gstEncoder when --output-save is configured.
+	 * @returns true if recording started, false on error or if unsupported.
+	 */
+	virtual bool StartRecording()	{ return false; }
+
+	/**
+	 * Stop the current recording and finalize the MP4 file.
+	 * Only supported by gstEncoder when --output-save is configured.
+	 * @returns true if recording stopped, false on error or if unsupported.
+	 */
+	virtual bool StopRecording()	{ return false; }
+
+	/**
+	 * Check if currently recording.
+	 */
+	virtual bool IsRecording() const	{ return false; }
+
+	/**
 	 * Check if the device is actively streaming or not.
 	 *
 	 * @returns `true` if the device is streaming (open), or `false` if it's closed

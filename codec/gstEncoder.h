@@ -91,6 +91,23 @@ public:
 	virtual void Close();
 
 	/**
+	 * Start recording to a new MP4 file segment.
+	 * Opens the valve so frames flow into splitmuxsink.
+	 */
+	virtual bool StartRecording();
+
+	/**
+	 * Stop recording and finalize the current MP4 file.
+	 * Injects EOS into splitmuxsink, then closes the valve.
+	 */
+	virtual bool StopRecording();
+
+	/**
+	 * Check if currently recording.
+	 */
+	virtual bool IsRecording() const	{ return mRecording; }
+
+	/**
 	 * Return the GStreamer pipeline object.
 	 */
 	inline GstPipeline* GetPipeline() const			{ return GST_PIPELINE(mPipeline); }
@@ -149,27 +166,31 @@ protected:
 	// WebRTC callbacks
 	static void onWebsocketMessage( WebRTCPeer* peer, const char* message, size_t message_size, void* user_data );
 
+	// splitmuxsink format-location callback
+	static gchar* onFormatLocation( GstElement* splitmux, guint fragment_id, gpointer user_data );
+
 	GstBus*     mBus;
 	GstCaps*    mBufferCaps;
 	GstElement* mAppSrc;
 	GstElement* mPipeline;
 	bool        mNeedData;
-	
+
 	std::string  mCapsStr;
 	std::string  mLaunchStr;
 
 	RingBuffer mBufferYUV;
-	
+
 	RTSPServer*   mRTSPServer;
 	WebRTCServer* mWebRTCServer;
 
+	// Recording control
+	GstElement* mSplitMuxSink;
+	bool        mRecording;
+
 private:
-    std::string mFirstFrameTime;  // Timestamp of the first frame
-    bool mFirstFrame;             // Flag to track first frame
-    
     // Helper function to get precise timestamp
-    GstDateTime* createGstDateTime() const;  // Creates GstDateTime for metadata
-    std::string createUTCTimeString() const; // Creates UTC string for logging
+    GstDateTime* createGstDateTime() const;
+    std::string createUTCTimeString() const;
 
 };
  

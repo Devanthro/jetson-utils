@@ -27,8 +27,10 @@
 #include "commandLine.h"
 
 #include <signal.h>
+#include <atomic>
 
 bool signal_recieved = false;
+static std::atomic<int> recording_command{0};  // 0=none, 1=start, 2=stop
 
 void sig_handler(int signo)
 {
@@ -36,6 +38,14 @@ void sig_handler(int signo)
 	{
 		LogInfo("received SIGINT\n");
 		signal_recieved = true;
+	}
+	else if( signo == SIGUSR1 )
+	{
+		recording_command.store(1);
+	}
+	else if( signo == SIGUSR2 )
+	{
+		recording_command.store(2);
 	}
 }
 
@@ -70,6 +80,10 @@ int main( int argc, char** argv )
 	 */	
 	if( signal(SIGINT, sig_handler) == SIG_ERR )
 		LogError("can't catch SIGINT\n");
+	if( signal(SIGUSR1, sig_handler) == SIG_ERR )
+		LogError("can't catch SIGUSR1\n");
+	if( signal(SIGUSR2, sig_handler) == SIG_ERR )
+		LogError("can't catch SIGUSR2\n");
 
 	/*
 	 * create input video stream
@@ -128,10 +142,18 @@ int main( int argc, char** argv )
 		{
 			output->Render(image, input->GetWidth(), input->GetHeight());
 
+			// check for recording start/stop signals (SIGUSR1/SIGUSR2)
+			int cmd = recording_command.exchange(0);
+			if( cmd == 1 )
+				output->StartRecording();
+			else if( cmd == 2 )
+				output->StopRecording();
+
 			// update status bar
 			char str[256];
-			sprintf(str, "Video Viewer (%ux%u) | %.1f FPS", input->GetWidth(), input->GetHeight(), output->GetFrameRate());
-			output->SetStatus(str);	
+			sprintf(str, "Video Viewer (%ux%u) | %.1f FPS%s", input->GetWidth(), input->GetHeight(), output->GetFrameRate(),
+				output->IsRecording() ? " | REC" : "");
+			output->SetStatus(str);
 
 			// check if the user quit
 			if( !output->IsStreaming() )

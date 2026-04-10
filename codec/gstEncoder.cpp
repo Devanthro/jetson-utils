@@ -82,7 +82,8 @@ gstEncoder::gstEncoder(const videoOptions& options) : videoOutput(options) {
     mRTSPServer = NULL;
     mWebRTCServer = NULL;
     mNeedData = false;
-    mFirstFrame = true;
+    mSplitMuxSink = NULL;
+    mRecording = false;
     mBufferYUV.SetThreaded(false);
 }
 
@@ -115,6 +116,12 @@ void gstEncoder::destroyPipeline()
 	{
 		gst_object_unref(mAppSrc);
 		mAppSrc = NULL;
+	}
+
+	if( mSplitMuxSink != NULL )
+	{
+		gst_object_unref(mSplitMuxSink);
+		mSplitMuxSink = NULL;
 	}
 
 	if( mBus != NULL )
@@ -240,7 +247,21 @@ bool gstEncoder::initPipeline()
 
 	g_signal_connect(appsrcElement, "need-data", G_CALLBACK(onNeedData), this);
 	g_signal_connect(appsrcElement, "enough-data", G_CALLBACK(onEnoughData), this);
-	
+
+	// retrieve splitmuxsink for recording control
+	mSplitMuxSink = gst_bin_get_by_name(GST_BIN(pipeline), "splitsink");
+
+	if( mSplitMuxSink != NULL )
+	{
+		LogInfo(LOG_GSTREAMER "gstEncoder -- splitmuxsink found, recording control available\n");
+		g_signal_connect(mSplitMuxSink, "format-location", G_CALLBACK(onFormatLocation), this);
+	}
+	else if( mOptions.save.path.length() > 0 )
+	{
+		LogError(LOG_GSTREAMER "gstEncoder -- failed to find splitmuxsink in pipeline\n");
+		return false;
+	}
+
 	return true;
 }
 
@@ -392,26 +413,24 @@ bool gstEncoder::buildLaunchStr()
     else if (mOptions.codec == videoOptions::CODEC_MJPEG)
         ss << "! image/jpeg ! ";
 
-    // If saving the file
+    // If saving the file, use splitmuxsink with split-now for on-demand recording.
+    // Data always flows through h264parse → splitmuxsink. When not recording,
+    // format-location returns /dev/null (discards data). split-now triggers boundaries.
     if (mOptions.save.path.length() > 0)
     {
-        ss << "tee name=savetee savetee. ! queue ! ";
-        
-        // Add parser to generate proper caps for mp4mux
+        // Add parser to generate proper caps for splitmuxsink
         if (mOptions.save.extension == "mp4" || mOptions.save.extension == "qt")
         {
             if (mOptions.codec == videoOptions::CODEC_H264)
                 ss << "h264parse ! ";
             else if (mOptions.codec == videoOptions::CODEC_H265)
                 ss << "h265parse ! ";
-            
-            ss << "mp4mux presentation-time=true ! ";
-            ss << "filesink location=\"" << mOptions.save.path << "\" ";
         }
-        else if (!gst_build_filesink(mOptions.save, mOptions.codec, ss))
-            return false;
 
-        ss << "savetee. ! queue ! fakesink ";
+        ss << "splitmuxsink name=splitsink "
+           << "async-finalize=true "
+           << "muxer-factory=mp4mux "
+           << "max-size-time=0 max-size-bytes=0 ";
     }
     else
     {
@@ -713,54 +732,7 @@ bool gstEncoder::encodeYUV( void* buffer, size_t size )
 
 // Render
 bool gstEncoder::Render( void* image, uint32_t width, uint32_t height, imageFormat format, cudaStream_t stream )
-{	
-       if (mFirstFrame) {
-        // Get current UTC time and format filename
-        mFirstFrameTime = createUTCTimeString();
-        mFirstFrame = false;
-        LogInfo(LOG_GSTREAMER "First frame received at (UTC): %s\n", mFirstFrameTime.c_str());
-        
-        // Update the output filename with the timestamp
-        if (mPipeline && !mFirstFrameTime.empty()) {
-            std::string timestamp = mFirstFrameTime;
-            // Replace special characters for filename safety
-            for(char& c : timestamp) {
-                if(c == ':' || c == ' ')
-                    c = '_';
-            }
-            
-            // Print all elements in the pipeline for debugging
-            GstIterator* it = gst_bin_iterate_elements(GST_BIN(mPipeline));
-            GValue item = G_VALUE_INIT;
-            while (gst_iterator_next(it, &item) == GST_ITERATOR_OK) {
-                GstElement* element = GST_ELEMENT(g_value_get_object(&item));
-                LogInfo(LOG_GSTREAMER "Pipeline element: %s\n", GST_ELEMENT_NAME(element));
-                g_value_reset(&item);
-            }
-            gst_iterator_free(it);
-            
-            // Try to find filesink by iterating through elements
-            GList* elements = GST_BIN(mPipeline)->children;
-            while(elements) {
-                GstElement* element = GST_ELEMENT(elements->data);
-                if(GST_IS_ELEMENT(element) && g_str_has_prefix(GST_ELEMENT_NAME(element), "filesink")) {
-                    // Extract directory path and extension from original filename
-                    std::string dir = mOptions.save.path.substr(0, mOptions.save.path.find_last_of("/\\") + 1);
-                    std::string ext = mOptions.save.extension;
-                    
-                    // Create new filename with UTC timestamp
-                    std::string newPath = dir + std::to_string(mOptions.resource.port)  + "_" + timestamp + "." + ext;
-                    LogInfo(LOG_GSTREAMER "Attempting to update filesink path to: %s\n", newPath.c_str());
-                    g_object_set(G_OBJECT(element), "location", newPath.c_str(), NULL);
-                    
-                    LogInfo(LOG_GSTREAMER "Output file path updated to: %s\n", newPath.c_str());
-                    break;
-                }
-                elements = elements->next;
-            }
-        }
-    }
-    
+{
     // update the webrtc server if needed
     if (mWebRTCServer != NULL && !mWebRTCServer->IsThreaded())
         mWebRTCServer->ProcessRequests();    
@@ -930,9 +902,98 @@ void gstEncoder::Close()
 		LogError(LOG_GSTREAMER "gstEncoder -- failed to set pipeline state to NULL (error %u)\n", result);
 
 	sleep(1);
-	checkMsgBus();	
+	checkMsgBus();
 	mStreaming = false;
 	LogInfo(LOG_GSTREAMER "gstEncoder -- pipeline stopped\n");
+}
+
+
+// onFormatLocation (called by splitmuxsink when it needs a filename for a new segment)
+gchar* gstEncoder::onFormatLocation( GstElement* splitmux, guint fragment_id, gpointer user_data )
+{
+	gstEncoder* enc = (gstEncoder*)user_data;
+
+	if( !enc->mRecording )
+	{
+		LogInfo(LOG_GSTREAMER "gstEncoder -- not recording, discarding to /dev/null\n");
+		return g_strdup("/dev/null");
+	}
+
+	std::string timestamp = enc->createUTCTimeString();
+
+	// sanitize for filename
+	for( char& c : timestamp )
+	{
+		if( c == ':' || c == ' ' )
+			c = '_';
+	}
+
+	std::string dir = enc->mOptions.save.path.substr(0, enc->mOptions.save.path.find_last_of("/\\") + 1);
+	std::string ext = enc->mOptions.save.extension;
+
+	std::string path = dir + std::to_string(enc->mOptions.resource.port) + "_" + timestamp + "." + ext;
+
+	LogInfo(LOG_GSTREAMER "gstEncoder -- new recording file: %s\n", path.c_str());
+
+	return g_strdup(path.c_str());
+}
+
+
+// StartRecording
+bool gstEncoder::StartRecording()
+{
+	if( mSplitMuxSink == NULL )
+	{
+		LogError(LOG_GSTREAMER "gstEncoder::StartRecording() -- recording not configured (no --output-save)\n");
+		return false;
+	}
+
+	if( mRecording )
+	{
+		LogWarning(LOG_GSTREAMER "gstEncoder::StartRecording() -- already recording\n");
+		return true;
+	}
+
+	LogInfo(LOG_GSTREAMER "gstEncoder -- starting recording\n");
+
+	// set flag BEFORE split-now so format-location returns the real path
+	mRecording = true;
+
+	// split-now finalizes the /dev/null segment and triggers format-location
+	// for the new segment, which now returns the real timestamped path
+	g_signal_emit_by_name(mSplitMuxSink, "split-now");
+
+	LogInfo(LOG_GSTREAMER "gstEncoder -- recording started\n");
+	return true;
+}
+
+
+// StopRecording
+bool gstEncoder::StopRecording()
+{
+	if( mSplitMuxSink == NULL )
+	{
+		LogError(LOG_GSTREAMER "gstEncoder::StopRecording() -- recording not configured (no --output-save)\n");
+		return false;
+	}
+
+	if( !mRecording )
+	{
+		LogWarning(LOG_GSTREAMER "gstEncoder::StopRecording() -- not currently recording\n");
+		return true;
+	}
+
+	LogInfo(LOG_GSTREAMER "gstEncoder -- stopping recording\n");
+
+	// clear flag BEFORE split-now so format-location returns /dev/null for the next segment
+	mRecording = false;
+
+	// split-now finalizes the real recording file (moov atom written via async-finalize)
+	// and starts a new segment writing to /dev/null
+	g_signal_emit_by_name(mSplitMuxSink, "split-now");
+
+	LogInfo(LOG_GSTREAMER "gstEncoder -- recording stopped\n");
+	return true;
 }
 
 
