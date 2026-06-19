@@ -345,12 +345,12 @@ bool gstEncoder::buildLaunchStr()
     //    1) Full FPS branch -> Encode -> Save file
     //    2) Reduced FPS branch -> videorate -> 15 FPS -> Encode -> webrtc/rtp/etc.
 
-    ss << "appsrc name=mysource is-live=true do-timestamp=true format=3 ! queue ! tee name=rawtee ";
+    ss << "appsrc name=mysource is-live=true do-timestamp=true format=3 ! queue max-size-buffers=1 leaky=downstream ! tee name=rawtee ";
 
     //----------------------------------
     // FULL FPS BRANCH
     //----------------------------------
-    ss << "rawtee. ! queue ! ";
+    ss << "rawtee. ! queue max-size-buffers=1 leaky=downstream ! ";
 
     // If using V4L2 HW encoders (for H.264/H.265, etc.) and not MJPEG, need nvvidconv to get NVMM mem
     if (mOptions.codecType == videoOptions::CODEC_V4L2 && mOptions.codec != videoOptions::CODEC_MJPEG)
@@ -390,22 +390,27 @@ bool gstEncoder::buildLaunchStr()
     else if (mOptions.codec != videoOptions::CODEC_MJPEG)
     {
         ss << "bitrate=" << mOptions.bitRate << " ";
-        if (mOptions.deviceType == videoOptions::DEVICE_IP)
-        {
-            if (mOptions.codecType == videoOptions::CODEC_V4L2)
-                ss << "insert-sps-pps=1 insert-vui=1 idrinterval=30 ";
-            else if (mOptions.codecType == videoOptions::CODEC_OMX)
-                ss << "insert-sps-pps=1 insert-vui=1 ";
-        }
         if (mOptions.codecType == videoOptions::CODEC_V4L2)
+        {
+            ss << "preset-level=1 ";
+            ss << "profile=0 ";
+            ss << "insert-sps-pps=1 ";
+            ss << "idrinterval=30 ";
+            ss << "num-B-Frames=0 ";
+            ss << "EnableTwopassCBR=0 ";
             ss << "maxperf-enable=1 ";
+        }
+        else if (mOptions.codecType == videoOptions::CODEC_OMX)
+        {
+            ss << "insert-sps-pps=1 insert-vui=1 ";
+        }
     }
 
     // Add caps after encoder
     if (mOptions.codec == videoOptions::CODEC_H264)
-        ss << "! video/x-h264 ! queue !";
+        ss << "! video/x-h264,stream-format=byte-stream,alignment=au ! queue max-size-buffers=1 leaky=downstream !";
     else if (mOptions.codec == videoOptions::CODEC_H265)
-        ss << "! video/x-h265 ! ";
+        ss << "! video/x-h265,stream-format=byte-stream,alignment=au ! queue max-size-buffers=1 leaky=downstream !";
     else if (mOptions.codec == videoOptions::CODEC_VP8)
         ss << "! video/x-vp8 ! ";
     else if (mOptions.codec == videoOptions::CODEC_VP9)
@@ -435,14 +440,14 @@ bool gstEncoder::buildLaunchStr()
     else
     {
         // If no saving, just end this branch somewhere, or continue as needed
-        ss << "fakesink ";
+        ss << "fakesink sync=false ";
     }
 
     //----------------------------------
     // REDUCED FPS BRANCH (15 FPS)
     //----------------------------------
     // Now the second branch from rawtee goes through videorate to reduce FPS
-    ss << "rawtee. ! queue ! videorate ! video/x-raw,framerate=15/1 ! ";
+    ss << "rawtee. ! queue max-size-buffers=1 leaky=downstream ! videorate skip-to-first=true drop-only=true ! video/x-raw,framerate=15/1 ! ";
 
     // If using V4L2 HW encoder again
     if (mOptions.codecType == videoOptions::CODEC_V4L2 && mOptions.codec != videoOptions::CODEC_MJPEG)
@@ -469,21 +474,26 @@ bool gstEncoder::buildLaunchStr()
     else if (mOptions.codec != videoOptions::CODEC_MJPEG)
     {
         ss << "bitrate=" << mOptions.bitRate << " ";
-        if (mOptions.deviceType == videoOptions::DEVICE_IP)
-        {
-            if (mOptions.codecType == videoOptions::CODEC_V4L2)
-                ss << "insert-sps-pps=1 insert-vui=1 idrinterval=30 ";
-            else if (mOptions.codecType == videoOptions::CODEC_OMX)
-                ss << "insert-sps-pps=1 insert-vui=1 ";
-        }
         if (mOptions.codecType == videoOptions::CODEC_V4L2)
+        {
+            ss << "preset-level=1 ";
+            ss << "profile=0 ";
+            ss << "insert-sps-pps=1 ";
+            ss << "idrinterval=30 ";
+            ss << "num-B-Frames=0 ";
+            ss << "EnableTwopassCBR=0 ";
             ss << "maxperf-enable=1 ";
+        }
+        else if (mOptions.codecType == videoOptions::CODEC_OMX)
+        {
+            ss << "insert-sps-pps=1 insert-vui=1 ";
+        }
     }
 
     if (mOptions.codec == videoOptions::CODEC_H264)
-        ss << "! video/x-h264 ! queue !";
+        ss << "! video/x-h264,stream-format=byte-stream,alignment=au ! queue max-size-buffers=1 leaky=downstream !";
     else if (mOptions.codec == videoOptions::CODEC_H265)
-        ss << "! video/x-h265 ! ";
+        ss << "! video/x-h265,stream-format=byte-stream,alignment=au ! queue max-size-buffers=1 leaky=downstream !";
     else if (mOptions.codec == videoOptions::CODEC_VP8)
         ss << "! video/x-vp8 ! ";
     else if (mOptions.codec == videoOptions::CODEC_VP9)
@@ -522,8 +532,11 @@ bool gstEncoder::buildLaunchStr()
         else if (mOptions.codec == videoOptions::CODEC_MJPEG)
             ss << "rtpjpegpay";
 
-        if (mOptions.codec == videoOptions::CODEC_H264 || mOptions.codec == videoOptions::CODEC_H265) 
-            ss << " config-interval=1";
+        if (mOptions.codec == videoOptions::CODEC_H264 || mOptions.codec == videoOptions::CODEC_H265)
+        {
+            ss << " config-interval=-1";
+            ss << " mtu=1000";
+        }
 
         if (uri.protocol == "rtsp")
             ss << " name=pay0";	
@@ -535,17 +548,17 @@ bool gstEncoder::buildLaunchStr()
             ss << "udpsink host=" << uri.location << " ";
             if (uri.port != 0)
                 ss << "port=" << uri.port;
-            ss << " auto-multicast=true";
+            ss << " auto-multicast=true sync=false";
         }
         else if (uri.protocol == "webrtc")
         {
             ss << "application/x-rtp,media=video,encoding-name=" << videoOptions::CodecToStr(mOptions.codec)
-               << ",clock-rate=90000,payload=96 ! tee name=videotee videotee. ! queue ! fakesink";
+               << ",clock-rate=90000,payload=96 ! tee name=videotee videotee. ! queue max-size-buffers=1 leaky=downstream ! fakesink sync=false";
         }
     }
     else if (uri.protocol == "rtpmp2ts")
     {
-        if (mOptions.codec == videoOptions::CODEC_H264) 
+        if (mOptions.codec == videoOptions::CODEC_H264)
             ss << "h264parse config-interval=1 ! mpegtsmux ! rtpmp2tpay ! udpsink host=";
         else if (mOptions.codec == videoOptions::CODEC_H265)
             ss << "h265parse config-interval=1 ! mpegtsmux ! rtpmp2tpay ! udpsink host=";
@@ -554,11 +567,11 @@ bool gstEncoder::buildLaunchStr()
             LogError(LOG_GSTREAMER "gstEncoder -- rtpmp2ts output only supports h264 and h265. Unsupported codec (%s)\n", uri.extension.c_str());
             return false;
         }
-        
+
         ss << uri.location << " ";
         if (uri.port != 0)
             ss << "port=" << uri.port;
-        ss << " auto-multicast=true";
+        ss << " auto-multicast=true sync=false";
     }
     else if (uri.protocol == "rtmp")
     {
@@ -1053,12 +1066,13 @@ void gstEncoder::onWebsocketMessage( WebRTCPeer* peer, const char* message, size
 		    g_object_set(peer_context->webrtcbin, "stun-server", stun_url.c_str(), NULL);
 		}
 		
-		g_object_set(peer_context->webrtcbin, "latency", encoder->mOptions.latency, NULL);   // this doesn't seem to have an impact?
-	
+		g_object_set(peer_context->webrtcbin, "latency", encoder->mOptions.latency, NULL);
+
 		// set latency on the rtpbin (https://github.com/centricular/gstwebrtc-demos/issues/102#issuecomment-575157321)
 		GstElement* rtpbin = gst_bin_get_by_name(GST_BIN(peer_context->webrtcbin), "rtpbin");
 		g_assert_nonnull(rtpbin);
 		g_object_set(rtpbin, "latency", encoder->mOptions.latency, NULL);
+		g_object_set(rtpbin, "do-retransmission", FALSE, NULL);
 		gst_object_unref(rtpbin);
 		
 		// add queue and webrtcbin elements to the pipeline
