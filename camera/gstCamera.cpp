@@ -869,15 +869,28 @@ void gstCamera::Close()
 	if( !mStreaming )
 		return;
 
+	// send EOS to allow nvarguscamerasrc to properly close its Argus capture session
+	LogInfo(LOG_GSTREAMER "gstCamera -- shutting down pipeline, sending EOS\n");
+	gst_element_send_event(mPipeline, gst_event_new_eos());
+
+	// wait for EOS to propagate through the pipeline
+	GstMessage* msg = gst_bus_timed_pop_filtered(mBus, 2 * GST_SECOND,
+						     (GstMessageType)(GST_MESSAGE_EOS | GST_MESSAGE_ERROR));
+	if( msg != NULL )
+	{
+		gst_message_print(mBus, msg, this);
+		gst_message_unref(msg);
+	}
+
 	// stop pipeline
-	LogInfo(LOG_GSTREAMER "gstCamera -- stopping pipeline, transitioning to GST_STATE_NULL\n");
+	LogInfo(LOG_GSTREAMER "gstCamera -- transitioning pipeline to GST_STATE_NULL\n");
 
 	const GstStateChangeReturn result = gst_element_set_state(mPipeline, GST_STATE_NULL);
 
 	if( result != GST_STATE_CHANGE_SUCCESS )
-		LogError(LOG_GSTREAMER "gstCamera failed to set pipeline state to PLAYING (error %u)\n", result);
+		LogError(LOG_GSTREAMER "gstCamera -- failed to set pipeline state to NULL (error %u)\n", result);
 
-	usleep(250*1000);	
+	usleep(500*1000);
 	checkMsgBus();
 	mStreaming = false;
 	LogInfo(LOG_GSTREAMER "gstCamera -- pipeline stopped\n");

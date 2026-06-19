@@ -447,7 +447,8 @@ bool gstEncoder::buildLaunchStr()
     // REDUCED FPS BRANCH (15 FPS)
     //----------------------------------
     // Now the second branch from rawtee goes through videorate to reduce FPS
-    ss << "rawtee. ! queue max-size-buffers=1 leaky=downstream ! videorate skip-to-first=true drop-only=true ! video/x-raw,framerate=15/1 ! ";
+    const int webrtcFPS = (mOptions.frameRate > 0) ? (int)mOptions.frameRate : 15;
+    ss << "rawtee. ! queue max-size-buffers=1 leaky=downstream ! videorate skip-to-first=true drop-only=true ! video/x-raw,framerate=" << webrtcFPS << "/1 ! ";
 
     // If using V4L2 HW encoder again
     if (mOptions.codecType == videoOptions::CODEC_V4L2 && mOptions.codec != videoOptions::CODEC_MJPEG)
